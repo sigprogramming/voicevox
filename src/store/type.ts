@@ -77,6 +77,13 @@ export type Score = {
   notes: Note[];
 };
 
+export type BarsBeatsSixteenths = {
+  bars: number;
+  beats: number;
+  sixteenths: number;
+  ticks: number;
+};
+
 export type RenderPhrase = {
   renderNotes: Note[];
   query?: AudioQuery;
@@ -706,6 +713,11 @@ export type SingingStoreState = {
   sequencerScrollX: number;
   sequencerScrollY: number;
   sequencerSnapSize: number;
+  nowPlaying: boolean;
+  loop: boolean;
+  leftLocatorPosition: number;
+  rightLocatorPosition: number;
+  volume: number;
 };
 
 export type SingingStoreTypes = {
@@ -789,6 +801,62 @@ export type SingingStoreTypes = {
 
   IMPORT_MUSICXML_FILE: {
     action(payload: { filePath?: string }): void;
+  };
+
+  EXPORT_WAVE_FILE: {
+    action(payload: { filePath?: string }): SaveResultObject;
+  };
+
+  POSITION_TO_TIME: {
+    getter(position: number): number;
+  };
+
+  TIME_TO_POSITION: {
+    getter(time: number): number;
+  };
+
+  GET_PLAYBACK_POSITION: {
+    action(): Promise<number>;
+  };
+
+  GET_PLAYBACK_BARS_BEATS_SIXTEENTHS: {
+    action(): Promise<BarsBeatsSixteenths>;
+  };
+
+  SET_PLAYBACK_POSITION: {
+    action(payload: { position: number }): void;
+  };
+
+  SET_PLAYBACK_STATE: {
+    mutation: { nowPlaying: boolean };
+  };
+
+  SET_LOOP: {
+    mutation: { loop: boolean };
+    action(payload: { loop: boolean }): void;
+  };
+
+  SET_LEFT_LOCATOR_POSITION: {
+    mutation: { position: number };
+    action(payload: { position: number }): void;
+  };
+
+  SET_RIGHT_LOCATOR_POSITION: {
+    mutation: { position: number };
+    action(payload: { position: number }): void;
+  };
+
+  SING_PLAY_AUDIO: {
+    action(): void;
+  };
+
+  SING_STOP_AUDIO: {
+    action(): void;
+  };
+
+  SET_VOLUME: {
+    mutation: { volume: number };
+    action(payload: { volume: number }): void;
   };
 };
 

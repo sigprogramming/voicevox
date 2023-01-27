@@ -1,15 +1,360 @@
+import { getDoremiFromMidi, round } from "@/helpers/singHelper";
 import {
-  Score,
-  Tempo,
-  TimeSignature,
+  AudioEvent,
+  AudioPlayer,
+  AudioRenderer,
+  AudioSequence,
+  Context,
+  NoteEvent,
+  NoteSequence,
+  SoundSequence,
+  Synth,
+} from "@/infrastructures/AudioRenderer";
+import { WriteFileErrorResult } from "@/type/preload";
+import { Midi } from "@tonejs/midi";
+import path from "path";
+import {
+  BarsBeatsSixteenths,
   Note,
+  SaveResultObject,
+  Score,
   SingingStoreState,
   SingingStoreTypes,
+  Tempo,
+  TimeSignature,
 } from "./type";
-import { createPartialStore } from "./vuex";
 import { createUILockAction } from "./ui";
-import { Midi } from "@tonejs/midi";
-import { getDoremiFromMidi } from "@/helpers/singHelper";
+import { createPartialStore } from "./vuex";
+
+// TODO: 別ファイルに移す
+const convertToWavFileData = (audioBuffer: AudioBuffer) => {
+  const left = audioBuffer.getChannelData(0);
+  const right = audioBuffer.getChannelData(1);
+
+  const waveData = new Float32Array(left.length + right.length);
+  for (let i = 0; i < left.length; i++) {
+    waveData[i * 2] = left[i];
+    waveData[i * 2 + 1] = right[i];
+  }
+
+  const bytesPerSample = 4; // Float32
+  const formatCode = 3; // IEEE_FLOAT
+  const numOfChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const byteRate = sampleRate * numOfChannels * bytesPerSample;
+  const blockSize = numOfChannels * bytesPerSample;
+  const dataSize = waveData.byteLength;
+
+  const buffer = new ArrayBuffer(44 + waveData.byteLength);
+  const dataView = new DataView(buffer);
+
+  let pos = 0;
+  const writeString = (str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      dataView.setUint8(pos, str.charCodeAt(i));
+      pos += 1;
+    }
+  };
+  const writeUint32 = (value: number) => {
+    dataView.setUint32(pos, value, true);
+    pos += 4;
+  };
+  const writeUint16 = (value: number) => {
+    dataView.setUint16(pos, value, true);
+    pos += 2;
+  };
+  const writeFloat32 = (value: number) => {
+    dataView.setFloat32(pos, value, true);
+    pos += 4;
+  };
+
+  writeString("RIFF");
+  writeUint32(dataSize + 36); // RIFFチャンクサイズ
+  writeString("WAVE"); // チャンクID
+  writeString("fmt ");
+  writeUint32(16); // fmtチャンクサイズ
+  writeUint16(formatCode);
+  writeUint16(numOfChannels);
+  writeUint32(sampleRate);
+  writeUint32(byteRate);
+  writeUint16(blockSize);
+  writeUint16(bytesPerSample * 8); // 1サンプルあたりのビット数
+  writeString("data");
+  writeUint32(dataSize); // dataチャンクサイズ
+
+  waveData.forEach((value) => writeFloat32(value));
+
+  return buffer;
+};
+
+const ticksToSecondsForConstantBpm = (
+  resolution: number,
+  bpm: number,
+  ticks: number
+) => {
+  const ticksPerBeat = resolution;
+  const beatsPerSecond = bpm / 60;
+  return ticks / ticksPerBeat / beatsPerSecond;
+};
+
+const secondsToTickForConstantBpm = (
+  resolution: number,
+  bpm: number,
+  seconds: number
+) => {
+  const ticksPerBeat = resolution;
+  const beatsPerSecond = bpm / 60;
+  return seconds * beatsPerSecond * ticksPerBeat;
+};
+
+const ticksToSeconds = (resolution: number, tempos: Tempo[], ticks: number) => {
+  let time = 0;
+  let tempo = tempos[tempos.length - 1];
+  for (let i = 0; i < tempos.length; i++) {
+    if (i === tempos.length - 1) {
+      break;
+    }
+    if (tempos[i + 1].position > ticks) {
+      tempo = tempos[i];
+      break;
+    }
+    time += ticksToSecondsForConstantBpm(
+      resolution,
+      tempos[i].tempo,
+      tempos[i + 1].position - tempos[i].position
+    );
+  }
+  return (
+    time +
+    ticksToSecondsForConstantBpm(
+      resolution,
+      tempo.tempo,
+      ticks - tempo.position
+    )
+  );
+};
+
+const secondsToTicks = (
+  resolution: number,
+  tempos: Tempo[],
+  seconds: number
+) => {
+  let time = 0;
+  let tempo = tempos[tempos.length - 1];
+  for (let i = 0; i < tempos.length; i++) {
+    if (i === tempos.length - 1) {
+      break;
+    }
+    const timeOfNextTempo =
+      time +
+      ticksToSecondsForConstantBpm(
+        resolution,
+        tempos[i].tempo,
+        tempos[i + 1].position - tempos[i].position
+      );
+    if (timeOfNextTempo > seconds) {
+      tempo = tempos[i];
+      break;
+    }
+    time = timeOfNextTempo;
+  }
+  return (
+    tempo.position +
+    secondsToTickForConstantBpm(resolution, tempo.tempo, seconds - time)
+  );
+};
+
+const ticksToBarsBeatsSixteenths = (
+  resolution: number,
+  timeSignatures: TimeSignature[],
+  ticks: number
+): BarsBeatsSixteenths => {
+  const sixteenthDuration = resolution / 4;
+  let barDuration = 0;
+  let beatDuration = 0;
+  let bars = 1;
+  let timeSignature = timeSignatures[timeSignatures.length - 1];
+
+  for (let i = 0; i < timeSignatures.length; i++) {
+    const beats = timeSignatures[i].beats;
+    const beatType = timeSignatures[i].beatType;
+    barDuration = (resolution * 4 * beats) / beatType;
+    beatDuration = (resolution * 4) / beatType;
+    if (i === timeSignatures.length - 1) {
+      break;
+    }
+    if (
+      timeSignatures[i].position <= ticks &&
+      timeSignatures[i + 1].position > ticks
+    ) {
+      timeSignature = timeSignatures[i];
+      break;
+    }
+    const position = timeSignatures[i].position;
+    const nextPosition = timeSignatures[i + 1].position;
+    bars += (nextPosition - position) / barDuration;
+  }
+
+  const posInTimeSignature = ticks - timeSignature.position;
+  const barsInTimeSignature = Math.floor(posInTimeSignature / barDuration);
+  bars += barsInTimeSignature;
+  bars = Math.round(bars);
+
+  const posInBar = posInTimeSignature - barDuration * barsInTimeSignature;
+  const beats = Math.floor(posInBar / beatDuration);
+
+  const posInBeat = posInBar - beatDuration * beats;
+  const sixteenths = Math.floor(posInBeat / sixteenthDuration);
+
+  ticks = posInBeat - sixteenthDuration * sixteenths;
+  ticks = Math.round(ticks);
+
+  return { bars, beats, sixteenths, ticks };
+};
+
+const generateNoteEvents = (score: Score, notes: Note[]) => {
+  const resolution = score.resolution;
+  const tempos = score.tempos;
+  return notes.map((value): NoteEvent => {
+    const noteOnPos = value.position;
+    const noteOffPos = value.position + value.duration;
+    return {
+      midi: value.midi,
+      noteOnTime: ticksToSeconds(resolution, tempos, noteOnPos),
+      noteOffTime: ticksToSeconds(resolution, tempos, noteOffPos),
+    };
+  });
+};
+
+type ChannelOptions = {
+  readonly volume: number;
+};
+
+class SingChannel {
+  private context: Context;
+  private audioPlayer: AudioPlayer;
+  private synth: Synth;
+  private gainNode: GainNode;
+
+  private sequence?: SoundSequence;
+
+  get volume() {
+    return this.gainNode.gain.value;
+  }
+
+  set volume(value: number) {
+    this.gainNode.gain.value = value;
+  }
+
+  constructor(context: Context, options: ChannelOptions = { volume: 0.1 }) {
+    this.context = context;
+    const audioContext = context.audioContext;
+
+    this.audioPlayer = new AudioPlayer(context);
+    this.synth = new Synth(context);
+    this.gainNode = audioContext.createGain();
+
+    this.audioPlayer.connect(this.gainNode);
+    this.synth.connect(this.gainNode);
+    this.gainNode.connect(audioContext.destination);
+
+    this.gainNode.gain.value = options.volume;
+  }
+
+  private setSequence(sequence: SoundSequence) {
+    if (this.sequence === undefined) {
+      this.context.transport.addSequence(sequence);
+    } else {
+      this.context.transport.replaceSequence(this.sequence, sequence);
+    }
+    this.sequence = sequence;
+  }
+
+  connect(destination: AudioNode) {
+    this.gainNode.disconnect();
+    this.gainNode.connect(destination);
+  }
+
+  disconnect() {
+    this.gainNode.disconnect();
+  }
+
+  setAudioEvents(audioEvents: AudioEvent[]) {
+    const sequence = new AudioSequence(this.audioPlayer, audioEvents);
+    this.setSequence(sequence);
+  }
+
+  setNoteEvents(noteEvents: NoteEvent[]) {
+    const sequence = new NoteSequence(this.synth, noteEvents);
+    this.setSequence(sequence);
+  }
+
+  dispose() {
+    if (this.sequence !== undefined) {
+      this.context.transport.removeSequence(this.sequence);
+    }
+    this.audioPlayer.dispose();
+    this.synth.dispose();
+  }
+}
+
+class Mixer {
+  private context: Context;
+
+  private channels: SingChannel[] = [];
+
+  constructor(context: Context) {
+    this.context = context;
+  }
+
+  loadChannels(score: Score) {
+    if (this.channels.length !== 0) {
+      this.deleteAllChannels();
+    }
+
+    const channel = new SingChannel(this.context);
+    const noteEvents = generateNoteEvents(score, score.notes);
+    channel.setNoteEvents(noteEvents);
+    channel.connect(this.context.audioContext.destination);
+
+    this.channels = [channel];
+  }
+
+  getSingChannel() {
+    if (this.channels.length === 0) {
+      throw new Error("Channel does not exist.");
+    }
+    return this.channels[0];
+  }
+
+  deleteAllChannels() {
+    this.channels.forEach((value) => {
+      value.dispose();
+    });
+    this.channels = [];
+  }
+
+  dispose() {
+    this.deleteAllChannels();
+  }
+}
+
+const getFromOptional = <T>(value: T | undefined): T => {
+  if (value === undefined) {
+    throw new Error("The value is undefined.");
+  }
+  return value;
+};
+
+const RESOLUTION = 480;
+const DEFAULT_TEMPO = 120;
+const DEFAULT_BEATS = 4;
+const DEFAULT_BEAT_TYPE = 4;
+
+const audioRenderer = new AudioRenderer();
+const mixer = new Mixer(audioRenderer.context);
+
+let playbackPosition = 0;
 
 export const singingStoreState: SingingStoreState = {
   engineId: undefined,
@@ -23,6 +368,11 @@ export const singingStoreState: SingingStoreState = {
   sequencerScrollY: 60, // Y軸 midi number
   sequencerScrollX: 0, // X軸 midi duration(仮)
   sequencerSnapSize: 120, // スナップサイズ 試行用で1/16(ppq=480)のmidi durationで固定
+  nowPlaying: false,
+  loop: false,
+  leftLocatorPosition: 0,
+  rightLocatorPosition: 0,
+  volume: 0,
 };
 
 export const singingStore = createPartialStore<SingingStoreTypes>({
@@ -88,46 +438,60 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
   GET_EMPTY_SCORE: {
     async action() {
       const score: Score = {
-        resolution: 480,
-        tempos: [{ position: 0, tempo: 120 }],
-        timeSignatures: [{ position: 0, beats: 4, beatType: 4 }],
+        resolution: RESOLUTION,
+        tempos: [{ position: 0, tempo: DEFAULT_TEMPO }],
+        timeSignatures: [
+          { position: 0, beats: DEFAULT_BEATS, beatType: DEFAULT_BEAT_TYPE },
+        ],
         notes: [],
       };
-      if (score.tempos.length !== 1 || score.tempos[0].position !== 0) {
-        throw new Error("Tempo does not exist at the beginning of the score.");
-      }
       if (
-        score.timeSignatures.length !== 1 ||
+        score.tempos.length === 0 ||
+        score.tempos[0].position !== 0 ||
+        score.timeSignatures.length === 0 ||
         score.timeSignatures[0].position !== 0
       ) {
-        throw new Error(
-          "Time signature does not exist at the beginning of the score."
-        );
+        throw new Error("The score is incorrect.");
       }
       return score;
     },
   },
 
   SET_SCORE: {
-    mutation(state, { score }: { score: Score }) {
+    mutation(state, { score }) {
       state.score = score;
     },
-    async action({ commit }, { score }: { score: Score }) {
+    async action({ state, getters, commit, dispatch }, { score }) {
       console.log(score);
+      if (state.nowPlaying) {
+        await dispatch("SING_STOP_AUDIO");
+      }
+
       commit("SET_SCORE", { score });
+
+      mixer.loadChannels(score);
+      const singChannel = mixer.getSingChannel();
+      singChannel.volume = state.volume;
+
+      const transport = audioRenderer.transport;
+      const leftLocatorPos = state.leftLocatorPosition;
+      const rightLocatorPos = state.rightLocatorPosition;
+      transport.time = getters.POSITION_TO_TIME(playbackPosition);
+      transport.loopStartTime = getters.POSITION_TO_TIME(leftLocatorPos);
+      transport.loopEndTime = getters.POSITION_TO_TIME(rightLocatorPos);
     },
   },
 
   SET_TEMPO: {
-    mutation(state, { index, tempo }: { index: number; tempo: Tempo }) {
-      state.score?.tempos.splice(index, 0, tempo);
+    mutation(state, { index, tempo }) {
+      const score = getFromOptional(state.score);
+      const tempos = [...score.tempos];
+      tempos.splice(index, 0, tempo);
+      score.tempos = tempos;
     },
     // テンポを設定する。既に同じ位置にテンポが存在する場合は置き換える。
-    async action({ state, commit }, { tempo }: { tempo: Tempo }) {
-      const score = state.score;
-      if (score === undefined || score.tempos.length === 0) {
-        throw new Error("Score is not initialized.");
-      }
+    async action({ state, getters, commit }, { tempo }) {
+      const score = getFromOptional(state.score);
       if (
         Number.isNaN(tempo.position) ||
         tempo.position < 0 ||
@@ -144,64 +508,78 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       });
       if (index === -1) return;
 
-      const round = (value: number, digits: number) => {
-        const powerOf10 = 10 ** digits;
-        return Math.round(value * powerOf10) / powerOf10;
-      };
-
       tempo.tempo = round(tempo.tempo, 2);
+
+      const transport = audioRenderer.transport;
+      if (state.nowPlaying) {
+        playbackPosition = getters.TIME_TO_POSITION(transport.time);
+      }
 
       if (duplicate) {
         commit("REMOVE_TEMPO", { index });
       }
       commit("SET_TEMPO", { index, tempo });
+
+      const singChannel = mixer.getSingChannel();
+      const noteEvents = generateNoteEvents(score, score.notes);
+      singChannel.setNoteEvents(noteEvents);
+
+      const leftLocatorPos = state.leftLocatorPosition;
+      const rightLocatorPos = state.rightLocatorPosition;
+      transport.time = getters.POSITION_TO_TIME(playbackPosition);
+      transport.loopStartTime = getters.POSITION_TO_TIME(leftLocatorPos);
+      transport.loopEndTime = getters.POSITION_TO_TIME(rightLocatorPos);
     },
   },
 
   REMOVE_TEMPO: {
-    mutation(state, { index }: { index: number }) {
-      state.score?.tempos.splice(index, 1);
+    mutation(state, { index }) {
+      const score = getFromOptional(state.score);
+      const tempos = [...score.tempos];
+      tempos.splice(index, 1);
+      score.tempos = tempos;
     },
     // テンポを削除する。先頭のテンポの場合はデフォルトのテンポに置き換える。
-    async action(
-      { state, commit, dispatch },
-      { position }: { position: number }
-    ) {
-      const emptyScore = await dispatch("GET_EMPTY_SCORE");
-      const defaultTempo = emptyScore.tempos[0];
-
-      const score = state.score;
-      if (score === undefined || score.tempos.length === 0) {
-        throw new Error("Score is not initialized.");
-      }
+    async action({ state, getters, commit }, { position }) {
+      const score = getFromOptional(state.score);
       const index = score.tempos.findIndex((value) => {
         return value.position === position;
       });
       if (index === -1) return;
 
+      const defaultTempo = { position: 0, tempo: DEFAULT_TEMPO };
+      const transport = audioRenderer.transport;
+      if (state.nowPlaying) {
+        playbackPosition = getters.TIME_TO_POSITION(transport.time);
+      }
+
       commit("REMOVE_TEMPO", { index });
-      if (score.tempos.length === 0) {
+      if (index === 0) {
         commit("SET_TEMPO", { index, tempo: defaultTempo });
       }
+
+      const singChannel = mixer.getSingChannel();
+      const noteEvents = generateNoteEvents(score, score.notes);
+      singChannel.setNoteEvents(noteEvents);
+
+      const leftLocatorPos = state.leftLocatorPosition;
+      const rightLocatorPos = state.rightLocatorPosition;
+      transport.time = getters.POSITION_TO_TIME(playbackPosition);
+      transport.loopStartTime = getters.POSITION_TO_TIME(leftLocatorPos);
+      transport.loopEndTime = getters.POSITION_TO_TIME(rightLocatorPos);
     },
   },
 
   SET_TIME_SIGNATURE: {
-    mutation(
-      state,
-      { index, timeSignature }: { index: number; timeSignature: TimeSignature }
-    ) {
-      state.score?.timeSignatures.splice(index, 0, timeSignature);
+    mutation(state, { index, timeSignature }) {
+      const score = getFromOptional(state.score);
+      const timeSignatures = [...score.timeSignatures];
+      timeSignatures.splice(index, 0, timeSignature);
+      score.timeSignatures = timeSignatures;
     },
     // 拍子を設定する。既に同じ位置に拍子が存在する場合は置き換える。
-    async action(
-      { state, commit },
-      { timeSignature }: { timeSignature: TimeSignature }
-    ) {
-      const score = state.score;
-      if (score === undefined || score.timeSignatures.length === 0) {
-        throw new Error("Score is not initialized.");
-      }
+    async action({ state, commit }, { timeSignature }) {
+      const score = getFromOptional(state.score);
       if (
         Number.isNaN(timeSignature.position) ||
         timeSignature.position < 0 ||
@@ -228,28 +606,28 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
   },
 
   REMOVE_TIME_SIGNATURE: {
-    mutation(state, { index }: { index: number }) {
-      state.score?.timeSignatures.splice(index, 1);
+    mutation(state, { index }) {
+      const score = getFromOptional(state.score);
+      const timeSignatures = [...score.timeSignatures];
+      timeSignatures.splice(index, 1);
+      score.timeSignatures = timeSignatures;
     },
     // 拍子を削除する。先頭の拍子の場合はデフォルトの拍子に置き換える。
-    async action(
-      { state, commit, dispatch },
-      { position }: { position: number }
-    ) {
-      const emptyScore = await dispatch("GET_EMPTY_SCORE");
-      const defaultTimeSignature = emptyScore.timeSignatures[0];
-
-      const score = state.score;
-      if (score === undefined || score.timeSignatures.length === 0) {
-        throw new Error("Score is not initialized.");
-      }
+    async action({ state, commit }, { position }) {
+      const score = getFromOptional(state.score);
       const index = score.timeSignatures.findIndex((value) => {
         return value.position === position;
       });
       if (index === -1) return;
 
+      const defaultTimeSignature = {
+        position: 0,
+        beats: DEFAULT_BEATS,
+        beatType: DEFAULT_BEAT_TYPE,
+      };
+
       commit("REMOVE_TIME_SIGNATURE", { index });
-      if (score.timeSignatures.length === 0) {
+      if (index === 0) {
         commit("SET_TIME_SIGNATURE", {
           index,
           timeSignature: defaultTimeSignature,
@@ -259,61 +637,60 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
   },
 
   ADD_NOTE: {
-    mutation(state, { note }: { note: Note }) {
-      if (state.score) {
-        const notes = state.score.notes.concat(note).sort((a, b) => {
-          return a.position - b.position;
-        });
-        state.score.notes = notes;
-      }
+    mutation(state, { note }) {
+      const score = getFromOptional(state.score);
+      score.notes = score.notes
+        .concat(note)
+        .sort((a, b) => a.position - b.position);
     },
     // ノートを追加する
     // NOTE: 重複削除など別途追加
-    async action({ state, commit }, { note }: { note: Note }) {
-      if (state.score === undefined) {
-        throw new Error("Score is not initialized.");
-      }
+    async action({ state, commit }, { note }) {
       commit("ADD_NOTE", { note });
+
+      const score = getFromOptional(state.score);
+      const singChannel = mixer.getSingChannel();
+      const noteEvents = generateNoteEvents(score, score.notes);
+      singChannel.setNoteEvents(noteEvents);
     },
   },
 
   CHANGE_NOTE: {
-    mutation(state, { index, note }: { index: number; note: Note }) {
-      if (state.score) {
-        const notes = [...state.score.notes];
-        notes.splice(index, 1, note);
-        state.score.notes = notes;
-      }
+    mutation(state, { index, note }) {
+      const score = getFromOptional(state.score);
+      const notes = [...score.notes];
+      notes.splice(index, 1, note);
+      score.notes = notes;
     },
-    async action(
-      { state, commit },
-      { index, note }: { index: number; note: Note }
-    ) {
-      if (state.score === undefined) {
-        throw new Error("Score is not initialized.");
-      }
+    async action({ state, commit }, { index, note }) {
       commit("CHANGE_NOTE", { index, note });
+
+      const score = getFromOptional(state.score);
+      const singChannel = mixer.getSingChannel();
+      const noteEvents = generateNoteEvents(score, score.notes);
+      singChannel.setNoteEvents(noteEvents);
     },
   },
 
   REMOVE_NOTE: {
-    mutation(state, { index }: { index: number }) {
-      if (state.score) {
-        const notes = [...state.score.notes];
-        notes.splice(index, 1);
-        state.score.notes = notes;
-      }
+    mutation(state, { index }) {
+      const score = getFromOptional(state.score);
+      const notes = [...score.notes];
+      notes.splice(index, 1);
+      score.notes = notes;
     },
-    async action({ state, commit }, { index }: { index: number }) {
-      if (state.score === undefined) {
-        throw new Error("Score is not initialized.");
-      }
+    async action({ state, commit }, { index }) {
       commit("REMOVE_NOTE", { index });
+
+      const score = getFromOptional(state.score);
+      const singChannel = mixer.getSingChannel();
+      const noteEvents = generateNoteEvents(score, score.notes);
+      singChannel.setNoteEvents(noteEvents);
     },
   },
 
   SET_ZOOM_X: {
-    mutation(state, { zoomX }: { zoomX: number }) {
+    mutation(state, { zoomX }) {
       state.sequencerZoomX = zoomX;
     },
     async action({ commit }, { zoomX }) {
@@ -324,7 +701,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
   },
 
   SET_ZOOM_Y: {
-    mutation(state, { zoomY }: { zoomY: number }) {
+    mutation(state, { zoomY }) {
       state.sequencerZoomY = zoomY;
     },
     async action({ commit }, { zoomY }) {
@@ -335,7 +712,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
   },
 
   SET_SCROLL_X: {
-    mutation(state, { scrollX }: { scrollX: number }) {
+    mutation(state, { scrollX }) {
       state.sequencerScrollX = scrollX;
     },
     async action({ commit }, { scrollX }) {
@@ -346,13 +723,126 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
   },
 
   SET_SCROLL_Y: {
-    mutation(state, { scrollY }: { scrollY: number }) {
+    mutation(state, { scrollY }) {
       state.sequencerScrollY = scrollY;
     },
     async action({ commit }, { scrollY }) {
       commit("SET_SCROLL_Y", {
         scrollY,
       });
+    },
+  },
+  POSITION_TO_TIME: {
+    getter: (state) => (position) => {
+      const score = getFromOptional(state.score);
+      return ticksToSeconds(score.resolution, score.tempos, position);
+    },
+  },
+  TIME_TO_POSITION: {
+    getter: (state) => (time) => {
+      const score = getFromOptional(state.score);
+      return secondsToTicks(score.resolution, score.tempos, time);
+    },
+  },
+  GET_PLAYBACK_POSITION: {
+    async action({ state, getters }) {
+      if (state.nowPlaying) {
+        const transport = audioRenderer.transport;
+        playbackPosition = getters.TIME_TO_POSITION(transport.time);
+      }
+      return playbackPosition;
+    },
+  },
+
+  SET_PLAYBACK_POSITION: {
+    async action({ getters }, { position }) {
+      const transport = audioRenderer.transport;
+      playbackPosition = position;
+      transport.time = getters.POSITION_TO_TIME(position);
+    },
+  },
+
+  GET_PLAYBACK_BARS_BEATS_SIXTEENTHS: {
+    async action({ state, getters }) {
+      const score = getFromOptional(state.score);
+      if (state.nowPlaying) {
+        const transport = audioRenderer.transport;
+        playbackPosition = getters.TIME_TO_POSITION(transport.time);
+      }
+      return ticksToBarsBeatsSixteenths(
+        score.resolution,
+        score.timeSignatures,
+        playbackPosition
+      );
+    },
+  },
+
+  SET_PLAYBACK_STATE: {
+    mutation(state, { nowPlaying }) {
+      state.nowPlaying = nowPlaying;
+    },
+  },
+
+  SET_LOOP: {
+    mutation(state, { loop }) {
+      state.loop = loop;
+    },
+    async action({ commit }, { loop }) {
+      commit("SET_LOOP", { loop });
+
+      audioRenderer.transport.loop = loop;
+    },
+  },
+
+  SET_LEFT_LOCATOR_POSITION: {
+    mutation(state, { position }) {
+      state.leftLocatorPosition = position;
+    },
+    async action({ getters, commit }, { position }) {
+      commit("SET_LEFT_LOCATOR_POSITION", { position });
+
+      const transport = audioRenderer.transport;
+      transport.loopStartTime = getters.POSITION_TO_TIME(position);
+    },
+  },
+
+  SET_RIGHT_LOCATOR_POSITION: {
+    mutation(state, { position }) {
+      state.rightLocatorPosition = position;
+    },
+    async action({ getters, commit }, { position }) {
+      commit("SET_RIGHT_LOCATOR_POSITION", { position });
+
+      const transport = audioRenderer.transport;
+      transport.loopEndTime = getters.POSITION_TO_TIME(position);
+    },
+  },
+
+  SING_PLAY_AUDIO: {
+    async action({ commit }) {
+      commit("SET_PLAYBACK_STATE", { nowPlaying: true });
+
+      audioRenderer.transport.start();
+    },
+  },
+
+  SING_STOP_AUDIO: {
+    async action({ commit }) {
+      commit("SET_PLAYBACK_STATE", { nowPlaying: false });
+
+      audioRenderer.transport.stop();
+    },
+  },
+
+  SET_VOLUME: {
+    mutation(state, { volume }) {
+      state.volume = volume;
+    },
+    async action({ commit }, { volume }) {
+      commit("SET_VOLUME", { volume });
+
+      const singChannel = mixer.getSingChannel();
+      singChannel.volume = volume;
     },
   },
 
@@ -385,11 +875,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           endPosition = convertToPosBasedOnRes(endPosition);
           position = convertToPosBasedOnRes(position);
           return Math.max(0, endPosition - position);
-        };
-
-        const round = (value: number, digits: number) => {
-          const powerOf10 = 10 ** digits;
-          return Math.round(value * powerOf10) / powerOf10;
         };
 
         // TODO: UIで読み込むトラックを選択できるようにする
@@ -521,11 +1006,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
             throw new Error("The value is invalid.");
           }
           return value;
-        };
-
-        const round = (value: number, digits: number) => {
-          const powerOf10 = 10 ** digits;
-          return Math.round(value * powerOf10) / powerOf10;
         };
 
         const getStepNumber = (stepElement: Element) => {
@@ -755,6 +1235,95 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
         parseMusicXml(xmlStr);
 
         await dispatch("SET_SCORE", { score });
+      }
+    ),
+  },
+
+  EXPORT_WAVE_FILE: {
+    action: createUILockAction(
+      async (
+        { state, getters, dispatch },
+        { filePath }
+      ): Promise<SaveResultObject> => {
+        const generateWriteErrorMessage = (
+          writeFileErrorResult: WriteFileErrorResult
+        ) => {
+          if (writeFileErrorResult.code) {
+            const code = writeFileErrorResult.code.toUpperCase();
+            if (code.startsWith("ENOSPC")) {
+              return "空き容量が足りません。";
+            }
+            if (code.startsWith("EACCES")) {
+              return "ファイルにアクセスする許可がありません。";
+            }
+          }
+          return `何らかの理由で失敗しました。${writeFileErrorResult.message}`;
+        };
+
+        const fileName = "test_export.wav";
+
+        const score = getFromOptional(state.score);
+        const leftLocatorPos = state.leftLocatorPosition;
+        const rightLocatorPos = state.rightLocatorPosition;
+
+        const renderStartTime = getters.POSITION_TO_TIME(leftLocatorPos);
+        const renderEndTime = getters.POSITION_TO_TIME(rightLocatorPos);
+        const renderDuration = renderEndTime - renderStartTime;
+
+        if (renderEndTime <= renderStartTime) {
+          // TODO: メッセージを表示するようにする
+          throw new Error("Invalid render range.");
+        }
+
+        if (state.nowPlaying) {
+          await dispatch("SING_STOP_AUDIO");
+        }
+
+        if (state.savingSetting.fixedExportEnabled) {
+          filePath = path.join(state.savingSetting.fixedExportDir, fileName);
+        } else {
+          filePath ??= await window.electron.showAudioSaveDialog({
+            title: "音声を保存",
+            defaultPath: fileName,
+          });
+        }
+        if (!filePath) {
+          return { result: "CANCELED", path: "" };
+        }
+
+        if (state.savingSetting.avoidOverwrite) {
+          let tail = 1;
+          const name = filePath.slice(0, filePath.length - 4);
+          while (await dispatch("CHECK_FILE_EXISTS", { file: filePath })) {
+            filePath = name + "[" + tail.toString() + "]" + ".wav";
+            tail += 1;
+          }
+        }
+
+        const audioBuffer = await audioRenderer.renderToBuffer(
+          renderStartTime,
+          renderDuration,
+          (context) => {
+            const mixer = new Mixer(context);
+            mixer.loadChannels(score);
+          }
+        );
+        const waveFileData = convertToWavFileData(audioBuffer);
+
+        const writeFileResult = window.electron.writeFile({
+          filePath,
+          buffer: waveFileData,
+        }); // 失敗した場合、WriteFileErrorResultオブジェクトが返り、成功時はundefinedが反る
+        if (writeFileResult) {
+          window.electron.logError(new Error(writeFileResult.message));
+          return {
+            result: "WRITE_ERROR",
+            path: filePath,
+            errorMessage: generateWriteErrorMessage(writeFileResult),
+          };
+        }
+
+        return { result: "SUCCESS", path: filePath };
       }
     ),
   },
