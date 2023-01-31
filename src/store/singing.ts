@@ -10,13 +10,10 @@ import {
   SoundSequence,
   Synth,
 } from "@/infrastructures/AudioRenderer";
-import { WriteFileErrorResult } from "@/type/preload";
 import { Midi } from "@tonejs/midi";
-import path from "path";
 import {
   BarsBeatsSixteenths,
   Note,
-  SaveResultObject,
   Score,
   SingingStoreState,
   SingingStoreTypes,
@@ -25,67 +22,6 @@ import {
 } from "./type";
 import { createUILockAction } from "./ui";
 import { createPartialStore } from "./vuex";
-
-// TODO: 別ファイルに移す
-const convertToWavFileData = (audioBuffer: AudioBuffer) => {
-  const left = audioBuffer.getChannelData(0);
-  const right = audioBuffer.getChannelData(1);
-
-  const waveData = new Float32Array(left.length + right.length);
-  for (let i = 0; i < left.length; i++) {
-    waveData[i * 2] = left[i];
-    waveData[i * 2 + 1] = right[i];
-  }
-
-  const bytesPerSample = 4; // Float32
-  const formatCode = 3; // IEEE_FLOAT
-  const numOfChannels = audioBuffer.numberOfChannels;
-  const sampleRate = audioBuffer.sampleRate;
-  const byteRate = sampleRate * numOfChannels * bytesPerSample;
-  const blockSize = numOfChannels * bytesPerSample;
-  const dataSize = waveData.byteLength;
-
-  const buffer = new ArrayBuffer(44 + waveData.byteLength);
-  const dataView = new DataView(buffer);
-
-  let pos = 0;
-  const writeString = (str: string) => {
-    for (let i = 0; i < str.length; i++) {
-      dataView.setUint8(pos, str.charCodeAt(i));
-      pos += 1;
-    }
-  };
-  const writeUint32 = (value: number) => {
-    dataView.setUint32(pos, value, true);
-    pos += 4;
-  };
-  const writeUint16 = (value: number) => {
-    dataView.setUint16(pos, value, true);
-    pos += 2;
-  };
-  const writeFloat32 = (value: number) => {
-    dataView.setFloat32(pos, value, true);
-    pos += 4;
-  };
-
-  writeString("RIFF");
-  writeUint32(dataSize + 36); // RIFFチャンクサイズ
-  writeString("WAVE"); // チャンクID
-  writeString("fmt ");
-  writeUint32(16); // fmtチャンクサイズ
-  writeUint16(formatCode);
-  writeUint16(numOfChannels);
-  writeUint32(sampleRate);
-  writeUint32(byteRate);
-  writeUint16(blockSize);
-  writeUint16(bytesPerSample * 8); // 1サンプルあたりのビット数
-  writeString("data");
-  writeUint32(dataSize); // dataチャンクサイズ
-
-  waveData.forEach((value) => writeFloat32(value));
-
-  return buffer;
-};
 
 const ticksToSecondsForConstantBpm = (
   resolution: number,
@@ -1205,95 +1141,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
         parseMusicXml(xmlStr);
 
         await dispatch("SET_SCORE", { score });
-      }
-    ),
-  },
-
-  EXPORT_WAVE_FILE: {
-    action: createUILockAction(
-      async (
-        { state, getters, dispatch },
-        { filePath }
-      ): Promise<SaveResultObject> => {
-        const generateWriteErrorMessage = (
-          writeFileErrorResult: WriteFileErrorResult
-        ) => {
-          if (writeFileErrorResult.code) {
-            const code = writeFileErrorResult.code.toUpperCase();
-            if (code.startsWith("ENOSPC")) {
-              return "空き容量が足りません。";
-            }
-            if (code.startsWith("EACCES")) {
-              return "ファイルにアクセスする許可がありません。";
-            }
-          }
-          return `何らかの理由で失敗しました。${writeFileErrorResult.message}`;
-        };
-
-        const fileName = "test_export.wav";
-
-        const score = getFromOptional(state.score);
-        const leftLocatorPos = state.leftLocatorPosition;
-        const rightLocatorPos = state.rightLocatorPosition;
-
-        const renderStartTime = getters.POSITION_TO_TIME(leftLocatorPos);
-        const renderEndTime = getters.POSITION_TO_TIME(rightLocatorPos);
-        const renderDuration = renderEndTime - renderStartTime;
-
-        if (renderEndTime <= renderStartTime) {
-          // TODO: メッセージを表示するようにする
-          throw new Error("Invalid render range.");
-        }
-
-        if (state.nowPlaying) {
-          await dispatch("SING_STOP_AUDIO");
-        }
-
-        if (state.savingSetting.fixedExportEnabled) {
-          filePath = path.join(state.savingSetting.fixedExportDir, fileName);
-        } else {
-          filePath ??= await window.electron.showAudioSaveDialog({
-            title: "音声を保存",
-            defaultPath: fileName,
-          });
-        }
-        if (!filePath) {
-          return { result: "CANCELED", path: "" };
-        }
-
-        if (state.savingSetting.avoidOverwrite) {
-          let tail = 1;
-          const name = filePath.slice(0, filePath.length - 4);
-          while (await dispatch("CHECK_FILE_EXISTS", { file: filePath })) {
-            filePath = name + "[" + tail.toString() + "]" + ".wav";
-            tail += 1;
-          }
-        }
-
-        const audioBuffer = await audioRenderer.renderToBuffer(
-          renderStartTime,
-          renderDuration,
-          (context) => {
-            const mixer = new Mixer(context);
-            mixer.loadChannels(score);
-          }
-        );
-        const waveFileData = convertToWavFileData(audioBuffer);
-
-        const writeFileResult = window.electron.writeFile({
-          filePath,
-          buffer: waveFileData,
-        }); // 失敗した場合、WriteFileErrorResultオブジェクトが返り、成功時はundefinedが反る
-        if (writeFileResult) {
-          window.electron.logError(new Error(writeFileResult.message));
-          return {
-            result: "WRITE_ERROR",
-            path: filePath,
-            errorMessage: generateWriteErrorMessage(writeFileResult),
-          };
-        }
-
-        return { result: "SUCCESS", path: filePath };
       }
     ),
   },

@@ -97,7 +97,7 @@ export default defineComponent({
     };
 
     const exportWaveFile = async () => {
-      await store.dispatch("EXPORT_WAVE_FILE", {});
+      // await store.dispatch("EXPORT_WAVE_FILE", {});
     };
 
     const openHelpDialog = () => {
