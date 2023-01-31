@@ -9,13 +9,11 @@ import {
 } from "@/infrastructures/AudioRenderer";
 import { Midi } from "@tonejs/midi";
 import {
-  BarsBeatsSixteenths,
   Note,
   Score,
   SingingStoreState,
   SingingStoreTypes,
   Tempo,
-  TimeSignature,
 } from "./type";
 import { createUILockAction } from "./ui";
 import { createPartialStore } from "./vuex";
@@ -97,54 +95,6 @@ const secondsToTicks = (
   );
 };
 
-const ticksToBarsBeatsSixteenths = (
-  resolution: number,
-  timeSignatures: TimeSignature[],
-  ticks: number
-): BarsBeatsSixteenths => {
-  const sixteenthDuration = resolution / 4;
-  let barDuration = 0;
-  let beatDuration = 0;
-  let bars = 1;
-  let timeSignature = timeSignatures[timeSignatures.length - 1];
-
-  for (let i = 0; i < timeSignatures.length; i++) {
-    const beats = timeSignatures[i].beats;
-    const beatType = timeSignatures[i].beatType;
-    barDuration = (resolution * 4 * beats) / beatType;
-    beatDuration = (resolution * 4) / beatType;
-    if (i === timeSignatures.length - 1) {
-      break;
-    }
-    if (
-      timeSignatures[i].position <= ticks &&
-      timeSignatures[i + 1].position > ticks
-    ) {
-      timeSignature = timeSignatures[i];
-      break;
-    }
-    const position = timeSignatures[i].position;
-    const nextPosition = timeSignatures[i + 1].position;
-    bars += (nextPosition - position) / barDuration;
-  }
-
-  const posInTimeSignature = ticks - timeSignature.position;
-  const barsInTimeSignature = Math.floor(posInTimeSignature / barDuration);
-  bars += barsInTimeSignature;
-  bars = Math.round(bars);
-
-  const posInBar = posInTimeSignature - barDuration * barsInTimeSignature;
-  const beats = Math.floor(posInBar / beatDuration);
-
-  const posInBeat = posInBar - beatDuration * beats;
-  const sixteenths = Math.floor(posInBeat / sixteenthDuration);
-
-  ticks = posInBeat - sixteenthDuration * sixteenths;
-  ticks = Math.round(ticks);
-
-  return { bars, beats, sixteenths, ticks };
-};
-
 const generateNoteEvents = (score: Score, notes: Note[]) => {
   const resolution = score.resolution;
   const tempos = score.tempos;
@@ -200,15 +150,6 @@ class SingChannel {
     this.sequence = sequence;
   }
 
-  connect(destination: AudioNode) {
-    this.gainNode.disconnect();
-    this.gainNode.connect(destination);
-  }
-
-  disconnect() {
-    this.gainNode.disconnect();
-  }
-
   setNoteEvents(noteEvents: NoteEvent[]) {
     const sequence = new NoteSequence(this.synth, noteEvents);
     this.setSequence(sequence);
@@ -219,47 +160,6 @@ class SingChannel {
       this.context.transport.removeSequence(this.sequence);
     }
     this.synth.dispose();
-  }
-}
-
-class Mixer {
-  private context: Context;
-
-  private channels: SingChannel[] = [];
-
-  constructor(context: Context) {
-    this.context = context;
-  }
-
-  loadChannels(score: Score) {
-    if (this.channels.length !== 0) {
-      this.deleteAllChannels();
-    }
-
-    const channel = new SingChannel(this.context);
-    const noteEvents = generateNoteEvents(score, score.notes);
-    channel.setNoteEvents(noteEvents);
-    channel.connect(this.context.audioContext.destination);
-
-    this.channels = [channel];
-  }
-
-  getSingChannel() {
-    if (this.channels.length === 0) {
-      throw new Error("Channel does not exist.");
-    }
-    return this.channels[0];
-  }
-
-  deleteAllChannels() {
-    this.channels.forEach((value) => {
-      value.dispose();
-    });
-    this.channels = [];
-  }
-
-  dispose() {
-    this.deleteAllChannels();
   }
 }
 
@@ -276,7 +176,7 @@ const DEFAULT_BEATS = 4;
 const DEFAULT_BEAT_TYPE = 4;
 
 const audioRenderer = new AudioRenderer();
-const mixer = new Mixer(audioRenderer.context);
+const singChannel = new SingChannel(audioRenderer.context);
 
 let playbackPosition = 0;
 
@@ -392,9 +292,8 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
 
       commit("SET_SCORE", { score });
 
-      mixer.loadChannels(score);
-      const singChannel = mixer.getSingChannel();
-      singChannel.volume = state.volume;
+      const noteEvents = generateNoteEvents(score, score.notes);
+      singChannel.setNoteEvents(noteEvents);
 
       const transport = audioRenderer.transport;
       transport.time = getters.POSITION_TO_TIME(playbackPosition);
@@ -439,7 +338,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       }
       commit("SET_TEMPO", { index, tempo });
 
-      const singChannel = mixer.getSingChannel();
       const noteEvents = generateNoteEvents(score, score.notes);
       singChannel.setNoteEvents(noteEvents);
 
@@ -473,7 +371,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
         commit("SET_TEMPO", { index, tempo: defaultTempo });
       }
 
-      const singChannel = mixer.getSingChannel();
       const noteEvents = generateNoteEvents(score, score.notes);
       singChannel.setNoteEvents(noteEvents);
 
@@ -560,7 +457,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       commit("ADD_NOTE", { note });
 
       const score = getFromOptional(state.score);
-      const singChannel = mixer.getSingChannel();
       const noteEvents = generateNoteEvents(score, score.notes);
       singChannel.setNoteEvents(noteEvents);
     },
@@ -577,7 +473,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       commit("CHANGE_NOTE", { index, note });
 
       const score = getFromOptional(state.score);
-      const singChannel = mixer.getSingChannel();
       const noteEvents = generateNoteEvents(score, score.notes);
       singChannel.setNoteEvents(noteEvents);
     },
@@ -594,7 +489,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       commit("REMOVE_NOTE", { index });
 
       const score = getFromOptional(state.score);
-      const singChannel = mixer.getSingChannel();
       const noteEvents = generateNoteEvents(score, score.notes);
       singChannel.setNoteEvents(noteEvents);
     },
@@ -673,21 +567,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
     },
   },
 
-  GET_PLAYBACK_BARS_BEATS_SIXTEENTHS: {
-    async action({ state, getters }) {
-      const score = getFromOptional(state.score);
-      if (state.nowPlaying) {
-        const transport = audioRenderer.transport;
-        playbackPosition = getters.TIME_TO_POSITION(transport.time);
-      }
-      return ticksToBarsBeatsSixteenths(
-        score.resolution,
-        score.timeSignatures,
-        playbackPosition
-      );
-    },
-  },
-
   SET_PLAYBACK_STATE: {
     mutation(state, { nowPlaying }) {
       state.nowPlaying = nowPlaying;
@@ -735,7 +614,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
     async action({ commit }, { volume }) {
       commit("SET_VOLUME", { volume });
 
-      const singChannel = mixer.getSingChannel();
       singChannel.volume = volume;
     },
   },

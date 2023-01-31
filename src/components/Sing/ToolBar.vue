@@ -30,15 +30,7 @@
         @click="stop"
       ></q-btn>
       <q-btn flat round class="sing-transport-button" icon="loop"></q-btn>
-      <div class="sing-playback-position">
-        <div class="bars">{{ bars }}</div>
-        .
-        <div class="beats-sixteenths">{{ beats }}</div>
-        .
-        <div class="beats-sixteenths">{{ sixteenths }}</div>
-        .
-        <div class="ticks">{{ ticks }}</div>
-      </div>
+      <div class="sing-playback-position">{{ playbackTimeStr }}</div>
       <q-input
         type="number"
         :model-value="tempoInputBuffer"
@@ -147,19 +139,20 @@ export default defineComponent({
       beatTypeInputBuffer.value = beatType;
     };
 
-    const bars = ref(1);
-    const beats = ref(0);
-    const sixteenths = ref(0);
-    const ticks = ref(0);
+    const playbackTimeStr = ref("");
 
     const updatePlayPos = async () => {
-      const barsBeatsSixteenths = await store.dispatch(
-        "GET_PLAYBACK_BARS_BEATS_SIXTEENTHS"
-      );
-      bars.value = barsBeatsSixteenths.bars;
-      beats.value = barsBeatsSixteenths.beats;
-      sixteenths.value = barsBeatsSixteenths.sixteenths;
-      ticks.value = Math.round(barsBeatsSixteenths.ticks);
+      const playPos = await store.dispatch("GET_PLAYBACK_POSITION");
+      const playTime = store.getters.POSITION_TO_TIME(playPos);
+
+      const intPlayTime = Math.floor(playTime);
+      const min = Math.floor(intPlayTime / 60);
+      const minStr = String(min).padStart(2, "0");
+      const secStr = String(intPlayTime - min * 60).padStart(2, "0");
+      const match = String(playTime).match(/\.(\d+)$/);
+      const milliSecStr = match?.[1].padEnd(3, "0").substring(0, 3) ?? "000";
+
+      playbackTimeStr.value = `${minStr}:${secStr}.${milliSecStr}`;
     };
 
     const tempos = computed(() => store.state.score?.tempos);
@@ -256,10 +249,7 @@ export default defineComponent({
       setBeatTypeInputBuffer,
       setTempo,
       setTimeSignature,
-      bars,
-      beats,
-      sixteenths,
-      ticks,
+      playbackTimeStr,
       nowPlaying,
       play,
       stop,
@@ -335,21 +325,7 @@ export default defineComponent({
 .sing-playback-position {
   font-size: 18px;
   margin: 0 4px;
-  display: flex;
-  .bars {
-    text-align: right;
-    margin-right: 1px;
-    width: 28px;
-  }
-  .beats-sixteenths {
-    text-align: right;
-    margin-right: 1px;
-    width: 21px;
-  }
-  .ticks {
-    text-align: right;
-    width: 28px;
-  }
+  min-width: 82px;
 }
 
 .sing-setting {

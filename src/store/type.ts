@@ -77,13 +77,6 @@ export type Score = {
   notes: Note[];
 };
 
-export type BarsBeatsSixteenths = {
-  bars: number;
-  beats: number;
-  sixteenths: number;
-  ticks: number;
-};
-
 export type RenderPhrase = {
   renderNotes: Note[];
   query?: AudioQuery;
@@ -812,10 +805,6 @@ export type SingingStoreTypes = {
 
   GET_PLAYBACK_POSITION: {
     action(): Promise<number>;
-  };
-
-  GET_PLAYBACK_BARS_BEATS_SIXTEENTHS: {
-    action(): Promise<BarsBeatsSixteenths>;
   };
 
   SET_PLAYBACK_POSITION: {
