@@ -714,7 +714,6 @@ export type SingingStoreState = {
   sequencerScrollY: number;
   sequencerSnapSize: number;
   nowPlaying: boolean;
-  loop: boolean;
   leftLocatorPosition: number;
   rightLocatorPosition: number;
   volume: number;
@@ -829,11 +828,6 @@ export type SingingStoreTypes = {
 
   SET_PLAYBACK_STATE: {
     mutation: { nowPlaying: boolean };
-  };
-
-  SET_LOOP: {
-    mutation: { loop: boolean };
-    action(payload: { loop: boolean }): void;
   };
 
   SET_LEFT_LOCATOR_POSITION: {

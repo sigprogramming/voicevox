@@ -29,23 +29,7 @@
         icon="stop"
         @click="stop"
       ></q-btn>
-      <q-btn
-        v-if="!loop"
-        flat
-        round
-        class="sing-transport-button"
-        icon="loop"
-        @click="setLoop(true)"
-      ></q-btn>
-      <q-btn
-        v-else
-        flat
-        round
-        class="sing-transport-button"
-        color="primary-light"
-        icon="loop"
-        @click="setLoop(false)"
-      ></q-btn>
+      <q-btn flat round class="sing-transport-button" icon="loop"></q-btn>
       <div class="sing-playback-position">
         <div class="bars">{{ bars }}</div>
         .
@@ -181,7 +165,6 @@ export default defineComponent({
     const tempos = computed(() => store.state.score?.tempos);
     const timeSignatures = computed(() => store.state.score?.timeSignatures);
     const nowPlaying = computed(() => store.state.nowPlaying);
-    const loop = computed(() => store.state.loop);
 
     watch(
       tempos,
@@ -252,10 +235,6 @@ export default defineComponent({
       updatePlayPos();
     };
 
-    const setLoop = (loop: boolean) => {
-      store.dispatch("SET_LOOP", { loop });
-    };
-
     const volume = computed({
       get() {
         return store.state.volume * 100;
@@ -282,11 +261,9 @@ export default defineComponent({
       sixteenths,
       ticks,
       nowPlaying,
-      loop,
       play,
       stop,
       seek,
-      setLoop,
       volume,
     };
   },

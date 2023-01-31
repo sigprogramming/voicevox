@@ -369,7 +369,6 @@ export const singingStoreState: SingingStoreState = {
   sequencerScrollX: 0, // X軸 midi duration(仮)
   sequencerSnapSize: 120, // スナップサイズ 試行用で1/16(ppq=480)のmidi durationで固定
   nowPlaying: false,
-  loop: false,
   leftLocatorPosition: 0,
   rightLocatorPosition: 0,
   volume: 0,
@@ -474,11 +473,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       singChannel.volume = state.volume;
 
       const transport = audioRenderer.transport;
-      const leftLocatorPos = state.leftLocatorPosition;
-      const rightLocatorPos = state.rightLocatorPosition;
       transport.time = getters.POSITION_TO_TIME(playbackPosition);
-      transport.loopStartTime = getters.POSITION_TO_TIME(leftLocatorPos);
-      transport.loopEndTime = getters.POSITION_TO_TIME(rightLocatorPos);
     },
   },
 
@@ -524,11 +519,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       const noteEvents = generateNoteEvents(score, score.notes);
       singChannel.setNoteEvents(noteEvents);
 
-      const leftLocatorPos = state.leftLocatorPosition;
-      const rightLocatorPos = state.rightLocatorPosition;
       transport.time = getters.POSITION_TO_TIME(playbackPosition);
-      transport.loopStartTime = getters.POSITION_TO_TIME(leftLocatorPos);
-      transport.loopEndTime = getters.POSITION_TO_TIME(rightLocatorPos);
     },
   },
 
@@ -562,11 +553,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       const noteEvents = generateNoteEvents(score, score.notes);
       singChannel.setNoteEvents(noteEvents);
 
-      const leftLocatorPos = state.leftLocatorPosition;
-      const rightLocatorPos = state.rightLocatorPosition;
       transport.time = getters.POSITION_TO_TIME(playbackPosition);
-      transport.loopStartTime = getters.POSITION_TO_TIME(leftLocatorPos);
-      transport.loopEndTime = getters.POSITION_TO_TIME(rightLocatorPos);
     },
   },
 
@@ -783,26 +770,12 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
     },
   },
 
-  SET_LOOP: {
-    mutation(state, { loop }) {
-      state.loop = loop;
-    },
-    async action({ commit }, { loop }) {
-      commit("SET_LOOP", { loop });
-
-      audioRenderer.transport.loop = loop;
-    },
-  },
-
   SET_LEFT_LOCATOR_POSITION: {
     mutation(state, { position }) {
       state.leftLocatorPosition = position;
     },
-    async action({ getters, commit }, { position }) {
+    async action({ commit }, { position }) {
       commit("SET_LEFT_LOCATOR_POSITION", { position });
-
-      const transport = audioRenderer.transport;
-      transport.loopStartTime = getters.POSITION_TO_TIME(position);
     },
   },
 
@@ -810,11 +783,8 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
     mutation(state, { position }) {
       state.rightLocatorPosition = position;
     },
-    async action({ getters, commit }, { position }) {
+    async action({ commit }, { position }) {
       commit("SET_RIGHT_LOCATOR_POSITION", { position });
-
-      const transport = audioRenderer.transport;
-      transport.loopEndTime = getters.POSITION_TO_TIME(position);
     },
   },
 

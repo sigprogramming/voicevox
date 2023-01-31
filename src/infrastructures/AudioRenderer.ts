@@ -88,12 +88,6 @@ class SoundEventScheduler {
   }
 }
 
-type LoopEvent = {
-  readonly contextTime: number;
-  readonly timeBeforeLoop: number;
-  readonly timeAfterLoop: number;
-};
-
 export class Transport {
   private readonly audioContext: AudioContext;
   private readonly timer: Timer;
@@ -101,16 +95,11 @@ export class Transport {
 
   private _state: "started" | "stopped" = "stopped";
   private _time = 0;
-  public loop = false;
-  public loopStartTime = 0;
-  public loopEndTime = 0;
   private schedulers: SoundEventScheduler[] = [];
 
   private startContextTime = 0;
   private startTime = 0;
-  private scheduledContextTime = 0;
   private schedulersToBeStopped: SoundEventScheduler[] = [];
-  private scheduledLoopEvents: LoopEvent[] = [];
 
   get state() {
     return this._state;
@@ -150,19 +139,8 @@ export class Transport {
   }
 
   private calculateTime(contextTime: number) {
-    if (contextTime >= this.startContextTime) {
-      const elapsedTime = contextTime - this.startContextTime;
-      return this.startTime + elapsedTime;
-    }
-    while (this.scheduledLoopEvents.length !== 0) {
-      const loopEvent = this.scheduledLoopEvents[0];
-      if (contextTime < loopEvent.contextTime) {
-        const timeUntilLoop = loopEvent.contextTime - contextTime;
-        return loopEvent.timeBeforeLoop - timeUntilLoop;
-      }
-      this.scheduledLoopEvents.shift();
-    }
-    throw new Error("Loop events are not scheduled correctly.");
+    const elapsedTime = contextTime - this.startContextTime;
+    return this.startTime + elapsedTime;
   }
 
   private scheduleSoundEvents(contextTime: number, time: number) {
@@ -186,58 +164,10 @@ export class Transport {
     });
   }
 
-  private scheduleLoopEvents(contextTime: number) {
-    if (
-      !this.loop ||
-      this.loopEndTime <= this.loopStartTime ||
-      this.startTime >= this.loopEndTime
-    ) {
-      return;
-    }
-
-    const timeUntilLoop = this.loopEndTime - this.startTime;
-    let contextTimeToLoop = this.startContextTime + timeUntilLoop;
-    if (contextTimeToLoop < this.scheduledContextTime) {
-      return;
-    }
-    if (contextTimeToLoop < contextTime) {
-      contextTimeToLoop = contextTime;
-    }
-
-    const loopDuration = this.loopEndTime - this.loopStartTime;
-
-    while (
-      contextTimeToLoop >= contextTime &&
-      contextTimeToLoop < contextTime + this.lookAhead
-    ) {
-      this.scheduledLoopEvents.push({
-        contextTime: contextTimeToLoop,
-        timeBeforeLoop: this.loopEndTime,
-        timeAfterLoop: this.loopStartTime,
-      });
-
-      this.startContextTime = contextTimeToLoop;
-      this.startTime = this.loopStartTime;
-
-      this.schedulers.forEach((value) => {
-        if (value.isScheduling) {
-          value.stopScheduling(this.startContextTime);
-        }
-        value.startScheduling(this.startContextTime, this.startTime);
-        value.scheduleEvents(this.startContextTime, this.lookAhead);
-      });
-
-      contextTimeToLoop += loopDuration;
-    }
-  }
-
   private scheduleEvents(contextTime: number) {
     const time = this.calculateTime(contextTime);
 
     this.scheduleSoundEvents(contextTime, time);
-    this.scheduleLoopEvents(contextTime);
-
-    this.scheduledContextTime = contextTime + this.lookAhead;
   }
 
   addSequence(sequence: SoundSequence) {
@@ -288,9 +218,7 @@ export class Transport {
 
     this.startContextTime = contextTime;
     this.startTime = this._time;
-    this.scheduledContextTime = this.startContextTime;
     this.schedulersToBeStopped = [];
-    this.scheduledLoopEvents = [];
 
     this.scheduleEvents(this.startContextTime);
   }
