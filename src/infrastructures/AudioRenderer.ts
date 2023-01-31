@@ -248,86 +248,6 @@ export class Transport {
   }
 }
 
-export class OfflineTransport {
-  private schedulers: SoundEventScheduler[] = [];
-
-  addSequence(sequence: SoundSequence) {
-    const exists = this.schedulers.some((value) => {
-      return value.sequence === sequence;
-    });
-    if (exists) {
-      throw new Error("The specified sequence has already been added.");
-    }
-    const scheduler = new SoundEventScheduler(sequence);
-    this.schedulers.push(scheduler);
-  }
-
-  replaceSequence(sequence: SoundSequence, newSequence: SoundSequence) {
-    const index = this.schedulers.findIndex((value) => {
-      return value.sequence === sequence;
-    });
-    if (index === -1) {
-      throw new Error("The specified sequence does not exist.");
-    }
-    const newScheduler = new SoundEventScheduler(newSequence);
-    this.schedulers.splice(index, 1, newScheduler);
-  }
-
-  removeSequence(sequence: SoundSequence) {
-    const index = this.schedulers.findIndex((value) => {
-      return value.sequence === sequence;
-    });
-    if (index === -1) {
-      throw new Error("The specified sequence does not exist.");
-    }
-    this.schedulers.splice(index, 1);
-  }
-
-  scheduleEvents(startTime: number, period: number) {
-    this.schedulers.forEach((value) => {
-      value.startScheduling(0, startTime);
-      value.scheduleEvents(0, period);
-      value.stopScheduling(period);
-    });
-  }
-}
-
-export type AudioEvent = {
-  readonly time: number;
-  readonly buffer: AudioBuffer;
-};
-
-export class AudioSequence implements SoundSequence {
-  private readonly audioPlayer: AudioPlayer;
-  private readonly audioEvents: AudioEvent[];
-
-  constructor(audioPlayer: AudioPlayer, audioEvents: AudioEvent[]) {
-    this.audioPlayer = audioPlayer;
-    this.audioEvents = audioEvents;
-  }
-
-  generateSoundEvents(startTime: number): SoundEvent[] {
-    return this.audioEvents
-      .filter((value) => {
-        const audioEndTime = value.time + value.buffer.duration;
-        return audioEndTime > startTime;
-      })
-      .map((value) => {
-        const offset = Math.max(startTime - value.time, 0);
-        return {
-          time: Math.max(value.time, startTime),
-          schedule: (contextTime: number) => {
-            this.audioPlayer.play(contextTime, offset, value.buffer);
-          },
-        };
-      });
-  }
-
-  scheduleStop(contextTime: number) {
-    this.audioPlayer.allStop(contextTime);
-  }
-}
-
 export interface Instrument {
   connect(destination: AudioNode): void;
   noteOn(contextTime: number, midi: number): void;
@@ -373,105 +293,6 @@ export class NoteSequence implements SoundSequence {
 
   scheduleStop(contextTime: number): void {
     this.instrument.allStop(contextTime);
-  }
-}
-
-class AudioPlayerVoice {
-  private readonly audioBufferSourceNode: AudioBufferSourceNode;
-  private readonly buffer: AudioBuffer;
-
-  private _isStopped = false;
-  private stopContextTime?: number;
-
-  get isStopped() {
-    return this._isStopped;
-  }
-
-  constructor(audioContext: BaseAudioContext, buffer: AudioBuffer) {
-    this.audioBufferSourceNode = audioContext.createBufferSource();
-    this.audioBufferSourceNode.buffer = buffer;
-    this.audioBufferSourceNode.onended = () => {
-      this._isStopped = true;
-    };
-    this.buffer = buffer;
-  }
-
-  connect(inputNode: AudioNode) {
-    this.audioBufferSourceNode.connect(inputNode);
-  }
-
-  start(contextTime: number, offset: number) {
-    this.stopContextTime = contextTime + this.buffer.duration;
-    this.audioBufferSourceNode.start(contextTime, offset);
-  }
-
-  stop(contextTime: number) {
-    if (this.stopContextTime === undefined) {
-      throw new Error("Not started.");
-    }
-    if (contextTime < this.stopContextTime) {
-      this.stopContextTime = contextTime;
-      this.audioBufferSourceNode.stop(contextTime);
-    }
-  }
-
-  dispose() {
-    this.stopContextTime = 0;
-    this.audioBufferSourceNode.stop();
-  }
-}
-
-export type AudioPlayerOptions = {
-  readonly volume: number;
-};
-
-export class AudioPlayer {
-  private readonly audioContext: BaseAudioContext;
-  private readonly gainNode: GainNode;
-
-  private voices: AudioPlayerVoice[] = [];
-
-  constructor(context: Context, options: AudioPlayerOptions = { volume: 0.1 }) {
-    this.audioContext = context.audioContext;
-
-    this.gainNode = this.audioContext.createGain();
-    this.gainNode.gain.value = options.volume;
-  }
-
-  connect(destination: AudioNode) {
-    this.gainNode.disconnect();
-    this.gainNode.connect(destination);
-  }
-
-  disconnect() {
-    this.gainNode.disconnect();
-  }
-
-  play(contextTime: number, offset: number, buffer: AudioBuffer) {
-    const voice = new AudioPlayerVoice(this.audioContext, buffer);
-    this.voices = this.voices.filter((value) => {
-      return !value.isStopped;
-    });
-    this.voices.push(voice);
-    voice.connect(this.gainNode);
-    voice.start(contextTime, offset);
-  }
-
-  allStop(contextTime?: number) {
-    if (contextTime === undefined) {
-      this.voices.forEach((value) => {
-        value.dispose();
-      });
-      this.voices = [];
-    } else {
-      this.voices.forEach((value) => {
-        value.stop(contextTime);
-      });
-    }
-  }
-
-  dispose() {
-    this.allStop();
   }
 }
 
@@ -662,7 +483,7 @@ export class Synth implements Instrument {
 
 export type Context = {
   readonly audioContext: BaseAudioContext;
-  readonly transport: Transport | OfflineTransport;
+  readonly transport: Transport;
 };
 
 export class AudioRenderer {
@@ -686,25 +507,6 @@ export class AudioRenderer {
     const audioContext = new AudioContext();
     const transport = new Transport(audioContext, 0.2, 0.6);
     this.onlineContext = { audioContext, transport };
-  }
-
-  renderToBuffer(
-    startTime: number,
-    duration: number,
-    callback: (context: Context) => void
-  ) {
-    if (this.onlineContext.transport.state === "started") {
-      this.onlineContext.transport.stop();
-    }
-
-    const sampleRate = this.context.audioContext.sampleRate;
-    const length = sampleRate * duration;
-    const audioContext = new OfflineAudioContext(2, length, sampleRate);
-    const transport = new OfflineTransport();
-
-    callback({ audioContext, transport });
-    transport.scheduleEvents(startTime, duration);
-    return audioContext.startRendering();
   }
 
   dispose() {

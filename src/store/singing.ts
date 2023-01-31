@@ -1,9 +1,6 @@
 import { getDoremiFromMidi, round } from "@/helpers/singHelper";
 import {
-  AudioEvent,
-  AudioPlayer,
   AudioRenderer,
-  AudioSequence,
   Context,
   NoteEvent,
   NoteSequence,
@@ -168,7 +165,6 @@ type ChannelOptions = {
 
 class SingChannel {
   private context: Context;
-  private audioPlayer: AudioPlayer;
   private synth: Synth;
   private gainNode: GainNode;
 
@@ -186,11 +182,9 @@ class SingChannel {
     this.context = context;
     const audioContext = context.audioContext;
 
-    this.audioPlayer = new AudioPlayer(context);
     this.synth = new Synth(context);
     this.gainNode = audioContext.createGain();
 
-    this.audioPlayer.connect(this.gainNode);
     this.synth.connect(this.gainNode);
     this.gainNode.connect(audioContext.destination);
 
@@ -215,11 +209,6 @@ class SingChannel {
     this.gainNode.disconnect();
   }
 
-  setAudioEvents(audioEvents: AudioEvent[]) {
-    const sequence = new AudioSequence(this.audioPlayer, audioEvents);
-    this.setSequence(sequence);
-  }
-
   setNoteEvents(noteEvents: NoteEvent[]) {
     const sequence = new NoteSequence(this.synth, noteEvents);
     this.setSequence(sequence);
@@ -229,7 +218,6 @@ class SingChannel {
     if (this.sequence !== undefined) {
       this.context.transport.removeSequence(this.sequence);
     }
-    this.audioPlayer.dispose();
     this.synth.dispose();
   }
 }
