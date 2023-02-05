@@ -707,8 +707,6 @@ export type SingingStoreState = {
   sequencerScrollY: number;
   sequencerSnapSize: number;
   nowPlaying: boolean;
-  leftLocatorPosition: number;
-  rightLocatorPosition: number;
   volume: number;
 };
 
@@ -804,7 +802,7 @@ export type SingingStoreTypes = {
   };
 
   GET_PLAYBACK_POSITION: {
-    action(): Promise<number>;
+    getter(): number;
   };
 
   SET_PLAYBACK_POSITION: {
@@ -813,16 +811,6 @@ export type SingingStoreTypes = {
 
   SET_PLAYBACK_STATE: {
     mutation: { nowPlaying: boolean };
-  };
-
-  SET_LEFT_LOCATOR_POSITION: {
-    mutation: { position: number };
-    action(payload: { position: number }): void;
-  };
-
-  SET_RIGHT_LOCATOR_POSITION: {
-    mutation: { position: number };
-    action(payload: { position: number }): void;
   };
 
   SING_PLAY_AUDIO: {

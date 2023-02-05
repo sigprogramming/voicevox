@@ -30,7 +30,7 @@
         @click="stop"
       ></q-btn>
       <q-btn flat round class="sing-transport-button" icon="loop"></q-btn>
-      <div class="sing-playback-position">{{ playbackTimeStr }}</div>
+      <div class="sing-playback-position">{{ playbackPositionStr }}</div>
       <q-input
         type="number"
         :model-value="tempoInputBuffer"
@@ -125,7 +125,7 @@ export default defineComponent({
 
     const setTempoInputBuffer = (tempoStr: string) => {
       const tempo = Number(tempoStr);
-      if (Number.isNaN(tempo) || tempo <= 0) return;
+      if (!Number.isFinite(tempo) || tempo <= 0) return;
       tempoInputBuffer.value = tempo;
     };
     const setBeatsInputBuffer = (beatsStr: string) => {
@@ -139,10 +139,10 @@ export default defineComponent({
       beatTypeInputBuffer.value = beatType;
     };
 
-    const playbackTimeStr = ref("");
+    const playbackPositionStr = ref("");
 
     const updatePlayPos = async () => {
-      const playPos = await store.dispatch("GET_PLAYBACK_POSITION");
+      const playPos = store.getters.GET_PLAYBACK_POSITION();
       const playTime = store.getters.POSITION_TO_TIME(playPos);
 
       const intPlayTime = Math.floor(playTime);
@@ -150,9 +150,9 @@ export default defineComponent({
       const minStr = String(min).padStart(2, "0");
       const secStr = String(intPlayTime - min * 60).padStart(2, "0");
       const match = String(playTime).match(/\.(\d+)$/);
-      const milliSecStr = match?.[1].padEnd(3, "0").substring(0, 3) ?? "000";
+      const milliSecStr = (match?.[1] ?? "0").padEnd(3, "0").substring(0, 3);
 
-      playbackTimeStr.value = `${minStr}:${secStr}.${milliSecStr}`;
+      playbackPositionStr.value = `${minStr}:${secStr}.${milliSecStr}`;
     };
 
     const tempos = computed(() => store.state.score?.tempos);
@@ -249,7 +249,7 @@ export default defineComponent({
       setBeatTypeInputBuffer,
       setTempo,
       setTimeSignature,
-      playbackTimeStr,
+      playbackPositionStr,
       nowPlaying,
       play,
       stop,
