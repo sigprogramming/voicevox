@@ -2,6 +2,7 @@ import {
   AudioEvent,
   AudioPlayer,
   AudioSequence,
+  BaseContext,
   ChannelStrip,
   Context,
   NoteEvent,
@@ -127,6 +128,15 @@ const generateNoteEvents = (
   });
 };
 
+const generateAudioEvents = async (
+  context: BaseContext,
+  time: number,
+  blob: Blob
+): Promise<AudioEvent[]> => {
+  const buffer = await context.createAudioBuffer(blob);
+  return [{ time, buffer }];
+};
+
 const copyScore = (score: Score): Score => {
   return {
     resolution: score.resolution,
@@ -171,7 +181,7 @@ type Phrase = {
   // renderingが進むに連れてデータが代入されていく
   query?: AudioQuery;
   queryHash?: string; // queryの変更を検知するためのハッシュ
-  buffer?: AudioBuffer;
+  blob?: Blob;
   startTime?: number;
   sequence?: Sequence;
 };
@@ -255,7 +265,7 @@ if (window.AudioContext) {
 let playbackPosition = 0;
 const allPhrases = new Map<string, Phrase>();
 
-const audioBufferCache = new Map<string, AudioBuffer>();
+const audioBlobCache = new Map<string, Blob>();
 
 export const singingStoreState: SingingStoreState = {
   engineId: undefined,
@@ -1124,15 +1134,14 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           const queryHash = await generateAudioQueryHash(phrase.query);
           // クエリが変更されていたら再合成
           if (queryHash !== phrase.queryHash) {
-            phrase.buffer = audioBufferCache.get(queryHash);
-            if (phrase.buffer) {
+            phrase.blob = audioBlobCache.get(queryHash);
+            if (phrase.blob) {
               window.electron.logInfo(`Loaded audio buffer from cache.`);
             } else {
               window.electron.logInfo(`Synthesizing...`);
 
-              const blob = await synthesize(phrase.singer, phrase.query);
-              phrase.buffer = await contextRef.createAudioBuffer(blob);
-              audioBufferCache.set(queryHash, phrase.buffer);
+              phrase.blob = await synthesize(phrase.singer, phrase.query);
+              audioBlobCache.set(queryHash, phrase.blob);
 
               window.electron.logInfo(`Synthesized.`);
             }
@@ -1143,12 +1152,11 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
               transportRef.removeSequence(phrase.sequence);
             }
 
-            const audioEvents: AudioEvent[] = [
-              {
-                time: phrase.startTime,
-                buffer: phrase.buffer,
-              },
-            ];
+            const audioEvents = await generateAudioEvents(
+              contextRef,
+              phrase.startTime,
+              phrase.blob
+            );
             const audioSequence: AudioSequence = {
               type: "audio",
               audioPlayer: audioPlayerRef,
@@ -1759,13 +1767,12 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
 
         // TODO: この辺りの処理を共通化する
         for (const phrase of allPhrases.values()) {
-          if (phrase.startTime !== undefined && phrase.buffer) {
-            const audioEvents: AudioEvent[] = [
-              {
-                time: phrase.startTime,
-                buffer: phrase.buffer,
-              },
-            ];
+          if (phrase.startTime !== undefined && phrase.blob) {
+            const audioEvents = await generateAudioEvents(
+              offlineContext,
+              phrase.startTime,
+              phrase.blob
+            );
             const audioSequence: AudioSequence = {
               type: "audio",
               audioPlayer,
