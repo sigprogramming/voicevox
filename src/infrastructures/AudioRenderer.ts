@@ -460,7 +460,7 @@ class AudioPlayerVoice implements Voice {
 }
 
 export type AudioPlayerOptions = {
-  readonly volume: number;
+  readonly volume?: number;
 };
 
 export class AudioPlayer {
@@ -469,14 +469,11 @@ export class AudioPlayer {
 
   private voices: AudioPlayerVoice[] = [];
 
-  constructor(
-    context: BaseContext,
-    options: AudioPlayerOptions = { volume: 1.0 }
-  ) {
+  constructor(context: BaseContext, options?: AudioPlayerOptions) {
     this.audioContext = context.audioContext;
 
     this.gainNode = this.audioContext.createGain();
-    this.gainNode.gain.value = options.volume;
+    this.gainNode.gain.value = options?.volume ?? 1.0;
   }
 
   connect(destination: AudioNode) {
@@ -591,9 +588,9 @@ class SynthVoice implements Voice {
 }
 
 export type SynthOptions = {
-  readonly volume: number;
-  readonly oscillatorType: OscillatorType;
-  readonly envelope: Envelope;
+  readonly volume?: number;
+  readonly oscillatorType?: OscillatorType;
+  readonly envelope?: Envelope;
 };
 
 /**
@@ -608,25 +605,18 @@ export class Synth implements Instrument {
   private voices: SynthVoice[] = [];
   private assignedVoices = new Map<number, SynthVoice>();
 
-  constructor(
-    context: BaseContext,
-    options: SynthOptions = {
-      volume: 0.1,
-      oscillatorType: "square",
-      envelope: {
-        attack: 0.001,
-        decay: 0.1,
-        sustain: 0.7,
-        release: 0.02,
-      },
-    }
-  ) {
+  constructor(context: BaseContext, options?: SynthOptions) {
     this.audioContext = context.audioContext;
 
-    this.oscillatorType = options.oscillatorType;
-    this.envelope = options.envelope;
+    this.oscillatorType = options?.oscillatorType ?? "square";
+    this.envelope = options?.envelope ?? {
+      attack: 0.001,
+      decay: 0.1,
+      sustain: 0.7,
+      release: 0.02,
+    };
     this.gainNode = this.audioContext.createGain();
-    this.gainNode.gain.value = options.volume;
+    this.gainNode.gain.value = options?.volume ?? 0.1;
   }
 
   connect(destination: AudioNode) {
@@ -678,7 +668,7 @@ export class Synth implements Instrument {
 }
 
 export type ChannelStripOptions = {
-  readonly volume: number;
+  readonly volume?: number;
 };
 
 export class ChannelStrip {
@@ -696,13 +686,10 @@ export class ChannelStrip {
     this.gainNode.gain.value = value;
   }
 
-  constructor(
-    context: BaseContext,
-    options: ChannelStripOptions = { volume: 0.1 }
-  ) {
+  constructor(context: BaseContext, options?: ChannelStripOptions) {
     const audioContext = context.audioContext;
     this.gainNode = audioContext.createGain();
-    this.gainNode.gain.value = options.volume;
+    this.gainNode.gain.value = options?.volume ?? 0.1;
   }
 
   connect(destination: AudioNode) {
