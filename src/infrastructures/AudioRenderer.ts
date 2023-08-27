@@ -1,12 +1,27 @@
 class Timer {
   private timeoutId?: number;
+  private tickListeners = new Set<() => void>();
 
-  constructor(interval: number, callback: () => void) {
+  constructor(interval: number) {
     const tick = () => {
-      callback();
+      this.tickListeners.forEach((value) => value());
       this.timeoutId = window.setTimeout(tick, interval);
     };
     tick();
+  }
+
+  addTickListener(listener: () => void) {
+    if (this.tickListeners.has(listener)) {
+      throw new Error("The listener has already been added.");
+    }
+    this.tickListeners.add(listener);
+  }
+
+  removeTickListener(listener: () => void) {
+    if (!this.tickListeners.has(listener)) {
+      throw new Error("The listener does not exist.");
+    }
+    this.tickListeners.delete(listener);
   }
 
   dispose() {
@@ -37,18 +52,12 @@ interface EventScheduler {
   stop(contextTime: number): void;
 }
 
-export interface BaseTransport {
-  addSequence(sequence: Sequence): void;
-  removeSequence(sequence: Sequence): void;
-}
-
 /**
  * 登録されているシーケンスのイベントをスケジュールし、再生を行います。
  */
-export class Transport implements BaseTransport {
-  private readonly audioContext: AudioContext;
-  private readonly timer: Timer;
-  private readonly lookAhead: number;
+export class Transport {
+  private readonly context: Context;
+  private readonly tickListener: () => void;
 
   private _state: "started" | "stopped" = "stopped";
   private _time = 0;
@@ -64,7 +73,8 @@ export class Transport implements BaseTransport {
 
   get time() {
     if (this._state === "started") {
-      const contextTime = this.audioContext.currentTime;
+      const audioContext = this.context.audioContext;
+      const contextTime = audioContext.currentTime;
       this._time = this.calculateTime(contextTime);
     }
     return this._time;
@@ -80,24 +90,16 @@ export class Transport implements BaseTransport {
     }
   }
 
-  /**
-   * @param audioContext コンテキスト時間の取得に使用するAudioContext。
-   * @param interval スケジューリングを行う間隔。
-   * @param lookAhead スケジューリングで先読みする時間。スケジューリングが遅れた場合でも正しく再生されるように、スケジューリングを行う間隔より長く設定する必要があります。
-   */
-  constructor(audioContext: AudioContext, interval: number, lookAhead: number) {
-    if (lookAhead <= interval) {
-      throw new Error("Look-ahead time must be longer than the interval.");
-    }
-
-    this.audioContext = audioContext;
-    this.lookAhead = lookAhead;
-    this.timer = new Timer(interval * 1000, () => {
+  constructor(context: Context) {
+    this.context = context;
+    this.tickListener = () => {
       if (this._state === "started") {
-        const contextTime = this.audioContext.currentTime;
+        const audioContext = this.context.audioContext;
+        const contextTime = audioContext.currentTime;
         this.schedule(contextTime);
       }
-    });
+    };
+    this.context.timer.addTickListener(this.tickListener);
   }
 
   private calculateTime(contextTime: number) {
@@ -122,6 +124,7 @@ export class Transport implements BaseTransport {
   }
 
   private schedule(contextTime: number) {
+    const lookAhead = this.context.lookAhead;
     const time = this.calculateTime(contextTime);
 
     // シーケンスの削除を反映
@@ -146,7 +149,7 @@ export class Transport implements BaseTransport {
     });
 
     this.schedulers.forEach((scheduler) => {
-      scheduler.schedule(time + this.lookAhead);
+      scheduler.schedule(time + lookAhead);
     });
   }
 
@@ -172,7 +175,8 @@ export class Transport implements BaseTransport {
 
   start() {
     if (this._state === "started") return;
-    const contextTime = this.audioContext.currentTime;
+    const audioContext = this.context.audioContext;
+    const contextTime = audioContext.currentTime;
 
     this._state = "started";
 
@@ -184,7 +188,8 @@ export class Transport implements BaseTransport {
 
   stop() {
     if (this._state === "stopped") return;
-    const contextTime = this.audioContext.currentTime;
+    const audioContext = this.context.audioContext;
+    const contextTime = audioContext.currentTime;
     this._time = this.calculateTime(contextTime);
 
     this._state = "stopped";
@@ -199,14 +204,14 @@ export class Transport implements BaseTransport {
     if (this.state === "started") {
       this.stop();
     }
-    this.timer.dispose();
+    this.context.timer.removeTickListener(this.tickListener);
   }
 }
 
 /**
  * 登録されているシーケンスのイベントをスケジュールします。主に保存用途です。
  */
-export class OfflineTransport implements BaseTransport {
+export class OfflineTransport {
   private schedulers = new Map<Sequence, EventScheduler>();
 
   private createScheduler(sequence: Sequence) {
@@ -444,7 +449,10 @@ export class AudioPlayer {
 
   private voices: AudioPlayerVoice[] = [];
 
-  constructor(context: Context, options: AudioPlayerOptions = { volume: 1.0 }) {
+  constructor(
+    context: BaseContext,
+    options: AudioPlayerOptions = { volume: 1.0 }
+  ) {
     this.audioContext = context.audioContext;
 
     this.gainNode = this.audioContext.createGain();
@@ -604,7 +612,7 @@ export class Synth implements Instrument {
   private voices: SynthVoice[] = [];
 
   constructor(
-    context: Context,
+    context: BaseContext,
     options: SynthOptions = {
       volume: 0.1,
       oscillatorType: "square",
@@ -694,7 +702,7 @@ export class ChannelStrip {
   }
 
   constructor(
-    context: Context,
+    context: BaseContext,
     options: ChannelStripOptions = { volume: 0.1 }
   ) {
     const audioContext = context.audioContext;
@@ -711,67 +719,57 @@ export class ChannelStrip {
   }
 }
 
-export type Context = {
+export interface BaseContext {
   readonly audioContext: BaseAudioContext;
-  readonly transport: BaseTransport;
-};
+  createAudioBuffer(blob: Blob): Promise<AudioBuffer>;
+}
 
-export class AudioRenderer {
-  private readonly onlineContext: {
-    readonly audioContext: AudioContext;
-    readonly transport: Transport;
-  };
+export class Context implements BaseContext {
+  readonly audioContext: AudioContext;
+  readonly destination: AudioDestinationNode;
+  readonly timer: Timer;
+  readonly lookAhead: number;
 
-  get context(): Context {
-    return {
-      audioContext: this.onlineContext.audioContext,
-      transport: this.onlineContext.transport,
-    };
-  }
-
-  get audioContext() {
-    return this.onlineContext.audioContext;
-  }
-
-  get transport() {
-    return this.onlineContext.transport;
-  }
-
-  constructor() {
-    const audioContext = new AudioContext();
-    const transport = new Transport(audioContext, 0.2, 0.6);
-    this.onlineContext = { audioContext, transport };
+  constructor(scheduleInterval = 0.2, scheduleBufferTime = 0.4) {
+    this.audioContext = new AudioContext();
+    this.destination = this.audioContext.destination;
+    this.timer = new Timer(scheduleInterval * 1000);
+    this.lookAhead = scheduleInterval + scheduleBufferTime;
   }
 
   async createAudioBuffer(blob: Blob) {
-    const audioContext = this.onlineContext.audioContext;
     const arrayBuffer = await blob.arrayBuffer();
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-    return audioBuffer;
+    return this.audioContext.decodeAudioData(arrayBuffer);
   }
 
-  async renderToBuffer(
-    sampleRate: number,
-    startTime: number,
-    duration: number,
-    callback: (context: Context) => void
-  ) {
-    if (this.onlineContext.transport.state === "started") {
-      this.onlineContext.transport.stop();
-    }
+  close() {
+    this.timer.dispose();
+    this.audioContext.close();
+  }
+}
 
-    const length = sampleRate * duration;
-    const audioContext = new OfflineAudioContext(2, length, sampleRate);
-    const transport = new OfflineTransport();
+/**
+ * 音声書き出し用のコンテキストです。
+ */
+export class OfflineContext implements BaseContext {
+  readonly audioContext: OfflineAudioContext;
+  readonly destination: AudioDestinationNode;
 
-    callback({ audioContext, transport });
-    transport.schedule(startTime, duration);
-    const audioBuffer = await audioContext.startRendering();
-    return audioBuffer;
+  constructor(duration: number, sampleRate: number, numberOfChannels = 2) {
+    this.audioContext = new OfflineAudioContext(
+      numberOfChannels,
+      sampleRate * duration,
+      sampleRate
+    );
+    this.destination = this.audioContext.destination;
   }
 
-  dispose() {
-    this.onlineContext.transport.dispose();
-    this.onlineContext.audioContext.close();
+  async createAudioBuffer(blob: Blob) {
+    const arrayBuffer = await blob.arrayBuffer();
+    return this.audioContext.decodeAudioData(arrayBuffer);
+  }
+
+  renderToBuffer() {
+    return this.audioContext.startRendering();
   }
 }
