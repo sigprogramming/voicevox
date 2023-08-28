@@ -254,6 +254,10 @@ export class OfflineTransport {
   }
 }
 
+interface Voice {
+  isStopped(): boolean;
+}
+
 export type AudioEvent = {
   readonly time: number;
   readonly buffer: AudioBuffer;
@@ -267,6 +271,7 @@ class AudioEventScheduler implements EventScheduler {
   private startContextTime = 0;
   private startTime = 0;
   private index = 0;
+  private voices: Voice[] = [];
 
   constructor(audioPlayer: AudioPlayer, audioEvents: AudioEvent[]) {
     this.player = audioPlayer;
@@ -282,6 +287,7 @@ class AudioEventScheduler implements EventScheduler {
     this.startContextTime = contextTime;
     this.startTime = time;
     this.index = this.events.length;
+    this.voices = [];
 
     for (let i = 0; i < this.events.length; i++) {
       const event = this.events[i];
@@ -299,6 +305,9 @@ class AudioEventScheduler implements EventScheduler {
       throw new Error("Not started.");
     }
 
+    this.voices = this.voices.filter((value) => {
+      return !value.isStopped();
+    });
     while (this.index < this.events.length) {
       const event = this.events[this.index];
       const offset = Math.max(this.startTime - event.time, 0);
@@ -306,7 +315,8 @@ class AudioEventScheduler implements EventScheduler {
         this.startContextTime + (event.time + offset - this.startTime);
 
       if (event.time < untilTime) {
-        this.player.play(contextTime, offset, event.buffer);
+        const voice = this.player.play(contextTime, offset, event.buffer);
+        this.voices.push(voice);
         this.index++;
       } else break;
     }
@@ -317,16 +327,18 @@ class AudioEventScheduler implements EventScheduler {
       throw new Error("Not started.");
     }
 
-    this.player.allStop(contextTime);
+    this.voices.forEach((value) => {
+      this.player.stop(contextTime, value);
+    });
   }
 }
 
 export interface Instrument {
   connect(destination: AudioNode): void;
   disconnect(): void;
-  noteOn(contextTime: number, midi: number): void;
+  noteOn(contextTime: number, midi: number): Voice;
   noteOff(contextTime: number, midi: number): void;
-  allSoundOff(contextTime?: number): void;
+  noteOff(contextTime: number, voice: Voice): void;
 }
 
 export type NoteEvent = {
@@ -343,6 +355,7 @@ class NoteEventScheduler implements EventScheduler {
   private startContextTime = 0;
   private startTime = 0;
   private index = 0;
+  private voices: Voice[] = [];
 
   constructor(instrument: Instrument, noteEvents: NoteEvent[]) {
     this.instrument = instrument;
@@ -358,6 +371,7 @@ class NoteEventScheduler implements EventScheduler {
     this.startContextTime = contextTime;
     this.startTime = time;
     this.index = this.events.length;
+    this.voices = [];
 
     for (let i = 0; i < this.events.length; i++) {
       if (this.events[i].noteOffTime > time) {
@@ -374,6 +388,9 @@ class NoteEventScheduler implements EventScheduler {
       throw new Error("Not started.");
     }
 
+    this.voices = this.voices.filter((value) => {
+      return !value.isStopped();
+    });
     while (this.index < this.events.length) {
       const event = this.events[this.index];
       const noteOnTime = Math.max(event.noteOnTime, this.startTime);
@@ -383,8 +400,9 @@ class NoteEventScheduler implements EventScheduler {
         this.startContextTime + (event.noteOffTime - this.startTime);
 
       if (event.noteOnTime < untilTime) {
-        this.instrument.noteOn(noteOnContextTime, event.midi);
+        const voice = this.instrument.noteOn(noteOnContextTime, event.midi);
         this.instrument.noteOff(noteOffContextTime, event.midi);
+        this.voices.push(voice);
         this.index++;
       } else break;
     }
@@ -395,46 +413,48 @@ class NoteEventScheduler implements EventScheduler {
       throw new Error("Not started.");
     }
 
-    this.instrument.allSoundOff(contextTime);
+    this.voices.forEach((value) => {
+      this.instrument.noteOff(contextTime, value);
+    });
   }
 }
 
-class AudioPlayerVoice {
-  private readonly audioBufferSourceNode: AudioBufferSourceNode;
+class AudioPlayerVoice implements Voice {
+  private readonly bufferSourceNode: AudioBufferSourceNode;
   private readonly buffer: AudioBuffer;
 
   private _isStopped = false;
   private stopContextTime?: number;
 
-  get isStopped() {
-    return this._isStopped;
-  }
-
   constructor(audioContext: BaseAudioContext, buffer: AudioBuffer) {
-    this.audioBufferSourceNode = audioContext.createBufferSource();
-    this.audioBufferSourceNode.buffer = buffer;
-    this.audioBufferSourceNode.onended = () => {
+    this.bufferSourceNode = audioContext.createBufferSource();
+    this.bufferSourceNode.buffer = buffer;
+    this.bufferSourceNode.onended = () => {
       this._isStopped = true;
     };
     this.buffer = buffer;
   }
 
+  isStopped() {
+    return this._isStopped;
+  }
+
   connect(destination: AudioNode) {
-    this.audioBufferSourceNode.connect(destination);
+    this.bufferSourceNode.connect(destination);
   }
 
   play(contextTime: number, offset: number) {
-    this.audioBufferSourceNode.start(contextTime, offset);
+    this.bufferSourceNode.start(contextTime, offset);
     this.stopContextTime = contextTime + this.buffer.duration;
   }
 
-  stop(contextTime?: number) {
+  stop(contextTime: number) {
     if (this.stopContextTime === undefined) {
       throw new Error("Not started.");
     }
     if (contextTime === undefined || contextTime < this.stopContextTime) {
-      this.audioBufferSourceNode.stop(contextTime);
-      this.stopContextTime = contextTime ?? 0;
+      this.bufferSourceNode.stop(contextTime);
+      this.stopContextTime = contextTime;
     }
   }
 }
@@ -467,27 +487,23 @@ export class AudioPlayer {
     this.gainNode.disconnect();
   }
 
-  play(contextTime: number, offset: number, buffer: AudioBuffer) {
-    const voice = new AudioPlayerVoice(this.audioContext, buffer);
+  play(contextTime: number, offset: number, buffer: AudioBuffer): Voice {
     this.voices = this.voices.filter((value) => {
-      return !value.isStopped;
+      return !value.isStopped();
     });
-    this.voices.push(voice);
+    const voice = new AudioPlayerVoice(this.audioContext, buffer);
     voice.connect(this.gainNode);
     voice.play(contextTime, offset);
+    this.voices.push(voice);
+    return voice;
   }
 
-  allStop(contextTime?: number) {
-    if (contextTime === undefined) {
-      this.voices.forEach((value) => {
-        value.stop();
-      });
-      this.voices = [];
-    } else {
-      this.voices.forEach((value) => {
+  stop(contextTime: number, voice: Voice) {
+    this.voices.forEach((value) => {
+      if (value === voice) {
         value.stop(contextTime);
-      });
-    }
+      }
+    });
   }
 }
 
@@ -504,23 +520,14 @@ type SynthVoiceOptions = {
   readonly envelope: Envelope;
 };
 
-class SynthVoice {
-  readonly midi: number;
+class SynthVoice implements Voice {
+  private readonly midi: number;
   private readonly oscillatorNode: OscillatorNode;
   private readonly gainNode: GainNode;
   private readonly envelope: Envelope;
 
-  private _isActive = false;
   private _isStopped = false;
   private stopContextTime?: number;
-
-  get isActive() {
-    return this._isActive;
-  }
-
-  get isStopped() {
-    return this._isStopped;
-  }
 
   constructor(audioContext: BaseAudioContext, options: SynthVoiceOptions) {
     this.midi = options.midi;
@@ -537,6 +544,10 @@ class SynthVoice {
 
   private midiToFrequency(midi: number) {
     return 440 * 2 ** ((midi - 69) / 12);
+  }
+
+  isStopped() {
+    return this._isStopped;
   }
 
   connect(destination: AudioNode) {
@@ -558,7 +569,6 @@ class SynthVoice {
     this.oscillatorNode.frequency.value = freq;
 
     this.oscillatorNode.start(contextTime);
-    this._isActive = true;
   }
 
   noteOff(contextTime: number) {
@@ -574,22 +584,8 @@ class SynthVoice {
       this.gainNode.gain.setTargetAtTime(0, t0, rel);
 
       this.oscillatorNode.stop(stopContextTime);
-      this._isActive = false;
 
       this.stopContextTime = stopContextTime;
-    }
-  }
-
-  soundOff(contextTime?: number) {
-    if (
-      contextTime === undefined ||
-      this.stopContextTime === undefined ||
-      contextTime < this.stopContextTime
-    ) {
-      this.oscillatorNode.stop(contextTime);
-      this._isActive = false;
-
-      this.stopContextTime = contextTime ?? 0;
     }
   }
 }
@@ -610,6 +606,7 @@ export class Synth implements Instrument {
   private readonly envelope: Envelope;
 
   private voices: SynthVoice[] = [];
+  private assignedVoices = new Map<number, SynthVoice>();
 
   constructor(
     context: BaseContext,
@@ -640,44 +637,42 @@ export class Synth implements Instrument {
     this.gainNode.disconnect();
   }
 
-  noteOn(contextTime: number, midi: number) {
-    const exists = this.voices.some((value) => {
-      return value.isActive && value.midi === midi;
+  noteOn(contextTime: number, midi: number): Voice {
+    this.voices = this.voices.filter((value) => {
+      return !value.isStopped();
     });
-    if (exists) return;
-
-    const voice = new SynthVoice(this.audioContext, {
+    let voice = this.assignedVoices.get(midi);
+    if (voice) {
+      return voice;
+    }
+    voice = new SynthVoice(this.audioContext, {
       midi,
       oscillatorType: this.oscillatorType,
       envelope: this.envelope,
     });
-    this.voices = this.voices.filter((value) => {
-      return !value.isStopped;
-    });
-    this.voices.push(voice);
     voice.connect(this.gainNode);
     voice.noteOn(contextTime);
+    this.voices.push(voice);
+    this.assignedVoices.set(midi, voice);
+    return voice;
   }
 
-  noteOff(contextTime: number, midi: number) {
-    const voice = this.voices.find((value) => {
-      return value.isActive && value.midi === midi;
-    });
-    if (!voice) return;
-
-    voice.noteOff(contextTime);
-  }
-
-  allSoundOff(contextTime?: number) {
-    if (contextTime === undefined) {
-      this.voices.forEach((value) => {
-        value.soundOff();
-      });
-      this.voices = [];
+  noteOff(contextTime: number, midi: number): void;
+  noteOff(contextTime: number, voice: Voice): void;
+  noteOff(contextTime: number, arg: number | Voice) {
+    if (typeof arg === "number") {
+      const voice = this.assignedVoices.get(arg);
+      if (voice) {
+        voice.noteOff(contextTime);
+        this.assignedVoices.delete(arg);
+      }
     } else {
-      this.voices.forEach((value) => {
-        value.soundOff(contextTime);
+      const voice = this.voices.find((value) => {
+        return value === arg;
       });
+      if (voice) {
+        voice.noteOff(contextTime);
+      }
     }
   }
 }

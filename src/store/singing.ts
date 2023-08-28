@@ -4,7 +4,6 @@ import {
   AudioSequence,
   ChannelStrip,
   Context,
-  Instrument,
   NoteEvent,
   NoteSequence,
   OfflineContext,
@@ -174,7 +173,6 @@ type Phrase = {
   queryHash?: string; // queryの変更を検知するためのハッシュ
   buffer?: AudioBuffer;
   startTime?: number;
-  source?: Instrument | AudioPlayer;
   sequence?: Sequence;
 };
 
@@ -236,6 +234,8 @@ const DEFAULT_BEAT_TYPE = 4;
 let audioRenderingContext: Context | undefined;
 let transport: Transport | undefined;
 let channelStrip: ChannelStrip | undefined;
+let synth: Synth | undefined;
+let audioPlayer: AudioPlayer | undefined;
 
 // NOTE: テスト時はAudioContextが存在しない
 if (window.AudioContext) {
@@ -244,7 +244,11 @@ if (window.AudioContext) {
   audioRenderingContext = context;
   transport = new Transport(context);
   channelStrip = new ChannelStrip(context);
+  synth = new Synth(context);
+  audioPlayer = new AudioPlayer(context);
 
+  synth.connect(channelStrip.inputNode);
+  audioPlayer.connect(channelStrip.inputNode);
   channelStrip.connect(context.destination);
 }
 
@@ -1034,15 +1038,17 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           !state.score ||
           !audioRenderingContext ||
           !transport ||
-          !channelStrip
+          !synth ||
+          !audioPlayer
         ) {
           throw new Error(
-            "score or audioRenderingContext or transport or channelStrip is undefined."
+            "score or audioRenderingContext or transport or synth or audioPlayer is undefined."
           );
         }
         const contextRef = audioRenderingContext;
         const transportRef = transport;
-        const channelStripRef = channelStrip;
+        const synthRef = synth;
+        const audioPlayerRef = audioPlayer;
 
         // レンダリング中に変更される可能性のあるデータをコピーする
         const score = copyScore(state.score);
@@ -1064,16 +1070,13 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
               phrase.score.tempos,
               phrase.score.notes
             );
-            const synth = new Synth(contextRef);
-            synth.connect(channelStripRef.inputNode);
             const noteSequence: NoteSequence = {
               type: "note",
-              instrument: synth,
+              instrument: synthRef,
               noteEvents,
             };
             transportRef.addSequence(noteSequence);
 
-            phrase.source = synth;
             phrase.sequence = noteSequence;
           }
         }
@@ -1081,9 +1084,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           if (!foundPhrases.has(hash)) {
             allPhrases.delete(hash);
             // フレーズ削除時の処理
-            if (phrase.source) {
-              phrase.source.disconnect();
-            }
             if (phrase.sequence) {
               transportRef.removeSequence(phrase.sequence);
             }
@@ -1139,9 +1139,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
             phrase.queryHash = queryHash;
             phrase.startTime = calculateStartTime(phrase.score, phrase.query);
 
-            if (phrase.source) {
-              phrase.source.disconnect();
-            }
             if (phrase.sequence) {
               transportRef.removeSequence(phrase.sequence);
             }
@@ -1152,16 +1149,13 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
                 buffer: phrase.buffer,
               },
             ];
-            const audioPlayer = new AudioPlayer(contextRef);
-            audioPlayer.connect(channelStripRef.inputNode);
             const audioSequence: AudioSequence = {
               type: "audio",
-              audioPlayer,
+              audioPlayer: audioPlayerRef,
               audioEvents,
             };
             transportRef.addSequence(audioSequence);
 
-            phrase.source = audioPlayer;
             phrase.sequence = audioSequence;
           }
 
@@ -1760,8 +1754,11 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
         const offlineTransport = new OfflineTransport();
 
         const channelStrip = new ChannelStrip(offlineContext);
+        const synth = new Synth(offlineContext);
+        const audioPlayer = new AudioPlayer(offlineContext);
+
+        // TODO: この辺りの処理を共通化する
         for (const phrase of allPhrases.values()) {
-          // TODO: この辺りの処理を共通化する
           if (phrase.startTime !== undefined && phrase.buffer) {
             const audioEvents: AudioEvent[] = [
               {
@@ -1769,8 +1766,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
                 buffer: phrase.buffer,
               },
             ];
-            const audioPlayer = new AudioPlayer(offlineContext);
-            audioPlayer.connect(channelStrip.inputNode);
             const audioSequence: AudioSequence = {
               type: "audio",
               audioPlayer,
@@ -1783,8 +1778,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
               phrase.score.tempos,
               phrase.score.notes
             );
-            const synth = new Synth(offlineContext);
-            synth.connect(channelStrip.inputNode);
             const noteSequence: NoteSequence = {
               type: "note",
               instrument: synth,
@@ -1793,6 +1786,8 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
             offlineTransport.addSequence(noteSequence);
           }
         }
+        synth.connect(channelStrip.inputNode);
+        audioPlayer.connect(channelStrip.inputNode);
         channelStrip.connect(offlineContext.destination);
         offlineTransport.schedule(renderStartTime, renderDuration);
 
