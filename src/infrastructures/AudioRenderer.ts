@@ -5,7 +5,7 @@ class Timer {
   constructor(interval: number) {
     const tick = () => {
       this.tickListeners.forEach((value) => value());
-      this.timeoutId = window.setTimeout(tick, interval);
+      this.timeoutId = window.setTimeout(tick, interval * 1000);
     };
     tick();
   }
@@ -174,7 +174,9 @@ export class Transport {
   }
 
   start() {
-    if (this._state === "started") return;
+    if (this._state === "started") {
+      return;
+    }
     const audioContext = this.context.audioContext;
     const contextTime = audioContext.currentTime;
 
@@ -187,9 +189,12 @@ export class Transport {
   }
 
   stop() {
-    if (this._state === "stopped") return;
+    if (this._state === "stopped") {
+      return;
+    }
     const audioContext = this.context.audioContext;
     const contextTime = audioContext.currentTime;
+
     this._time = this.calculateTime(contextTime);
 
     this._state = "stopped";
@@ -245,11 +250,11 @@ export class OfflineTransport {
     this.schedulers.delete(sequence);
   }
 
-  schedule(startTime: number, period: number) {
+  schedule(startTime: number, duration: number) {
     this.schedulers.forEach((scheduler) => {
       scheduler.start(0, startTime);
-      scheduler.schedule(period);
-      scheduler.stop(period);
+      scheduler.schedule(duration);
+      scheduler.stop(duration);
     });
   }
 }
@@ -263,6 +268,10 @@ export type AudioEvent = {
   readonly buffer: AudioBuffer;
 };
 
+/**
+ * オーディオイベントをスケジュールします。
+ * 使い捨てで、startメソッドは一度しか呼び出せません。
+ */
 class AudioEventScheduler implements EventScheduler {
   private readonly player: AudioPlayer;
   private readonly events: AudioEvent[];
@@ -291,7 +300,8 @@ class AudioEventScheduler implements EventScheduler {
 
     for (let i = 0; i < this.events.length; i++) {
       const event = this.events[i];
-      if (event.time + event.buffer.duration > time) {
+      const eventEndTime = event.time + event.buffer.duration;
+      if (eventEndTime > time) {
         this.index = i;
         break;
       }
@@ -347,6 +357,10 @@ export type NoteEvent = {
   readonly midi: number;
 };
 
+/**
+ * ノートイベントをスケジュールします。
+ * 使い捨てで、startメソッドは一度しか呼び出せません。
+ */
 class NoteEventScheduler implements EventScheduler {
   private readonly instrument: Instrument;
   private readonly events: NoteEvent[];
@@ -511,7 +525,7 @@ export type Envelope = {
   readonly release: number;
 };
 
-type SynthVoiceOptions = {
+type SynthVoiceParams = {
   readonly midi: number;
   readonly oscillatorType: OscillatorType;
   readonly envelope: Envelope;
@@ -519,23 +533,23 @@ type SynthVoiceOptions = {
 
 class SynthVoice implements Voice {
   private readonly midi: number;
+  private readonly envelope: Envelope;
   private readonly oscillatorNode: OscillatorNode;
   private readonly gainNode: GainNode;
-  private readonly envelope: Envelope;
 
   private _isStopped = false;
   private stopContextTime?: number;
 
-  constructor(audioContext: BaseAudioContext, options: SynthVoiceOptions) {
-    this.midi = options.midi;
-    this.envelope = options.envelope;
+  constructor(audioContext: BaseAudioContext, params: SynthVoiceParams) {
+    this.midi = params.midi;
+    this.envelope = params.envelope;
 
     this.oscillatorNode = audioContext.createOscillator();
     this.oscillatorNode.onended = () => {
       this._isStopped = true;
     };
     this.gainNode = audioContext.createGain();
-    this.oscillatorNode.type = options.oscillatorType;
+    this.oscillatorNode.type = params.oscillatorType;
     this.oscillatorNode.connect(this.gainNode);
   }
 
@@ -587,16 +601,13 @@ class SynthVoice implements Voice {
   }
 }
 
-export type SynthOptions = {
+export type PolySynthOptions = {
   readonly volume?: number;
   readonly oscillatorType?: OscillatorType;
   readonly envelope?: Envelope;
 };
 
-/**
- * ポリフォニックなシンセサイザー。
- */
-export class Synth implements Instrument {
+export class PolySynth implements Instrument {
   private readonly audioContext: BaseAudioContext;
   private readonly gainNode: GainNode;
   private readonly oscillatorType: OscillatorType;
@@ -605,7 +616,7 @@ export class Synth implements Instrument {
   private voices: SynthVoice[] = [];
   private assignedVoices = new Map<number, SynthVoice>();
 
-  constructor(context: BaseContext, options?: SynthOptions) {
+  constructor(context: BaseContext, options?: PolySynthOptions) {
     this.audioContext = context.audioContext;
 
     this.oscillatorType = options?.oscillatorType ?? "square";
@@ -715,7 +726,7 @@ export class Context implements BaseContext {
   constructor(scheduleInterval = 0.2, scheduleBufferTime = 0.4) {
     this.audioContext = new AudioContext();
     this.destination = this.audioContext.destination;
-    this.timer = new Timer(scheduleInterval * 1000);
+    this.timer = new Timer(scheduleInterval);
     this.lookAhead = scheduleInterval + scheduleBufferTime;
   }
 

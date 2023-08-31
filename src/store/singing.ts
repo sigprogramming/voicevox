@@ -10,7 +10,7 @@ import {
   OfflineContext,
   OfflineTransport,
   Sequence,
-  Synth,
+  PolySynth,
   Transport,
 } from "@/infrastructures/AudioRenderer";
 import {
@@ -244,7 +244,7 @@ const DEFAULT_BEAT_TYPE = 4;
 let audioRenderingContext: Context | undefined;
 let transport: Transport | undefined;
 let channelStrip: ChannelStrip | undefined;
-let synth: Synth | undefined;
+let polySynth: PolySynth | undefined;
 let audioPlayer: AudioPlayer | undefined;
 
 // NOTE: テスト時はAudioContextが存在しない
@@ -254,18 +254,17 @@ if (window.AudioContext) {
   audioRenderingContext = context;
   transport = new Transport(context);
   channelStrip = new ChannelStrip(context);
-  synth = new Synth(context);
+  polySynth = new PolySynth(context);
   audioPlayer = new AudioPlayer(context);
 
-  synth.connect(channelStrip.inputNode);
+  polySynth.connect(channelStrip.inputNode);
   audioPlayer.connect(channelStrip.inputNode);
   channelStrip.connect(context.destination);
 }
 
 let playbackPosition = 0;
 const allPhrases = new Map<string, Phrase>();
-
-const audioBlobCache = new Map<string, Blob>();
+const phraseAudioBlobCache = new Map<string, Blob>();
 
 export const singingStoreState: SingingStoreState = {
   engineId: undefined,
@@ -1048,16 +1047,16 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           !state.score ||
           !audioRenderingContext ||
           !transport ||
-          !synth ||
+          !polySynth ||
           !audioPlayer
         ) {
           throw new Error(
-            "score or audioRenderingContext or transport or synth or audioPlayer is undefined."
+            "score or audioRenderingContext or transport or polySynth or audioPlayer is undefined."
           );
         }
         const contextRef = audioRenderingContext;
         const transportRef = transport;
-        const synthRef = synth;
+        const polySynthRef = polySynth;
         const audioPlayerRef = audioPlayer;
 
         // レンダリング中に変更される可能性のあるデータをコピーする
@@ -1082,7 +1081,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
             );
             const noteSequence: NoteSequence = {
               type: "note",
-              instrument: synthRef,
+              instrument: polySynthRef,
               noteEvents,
             };
             transportRef.addSequence(noteSequence);
@@ -1134,14 +1133,14 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           const queryHash = await generateAudioQueryHash(phrase.query);
           // クエリが変更されていたら再合成
           if (queryHash !== phrase.queryHash) {
-            phrase.blob = audioBlobCache.get(queryHash);
+            phrase.blob = phraseAudioBlobCache.get(queryHash);
             if (phrase.blob) {
               window.electron.logInfo(`Loaded audio buffer from cache.`);
             } else {
               window.electron.logInfo(`Synthesizing...`);
 
               phrase.blob = await synthesize(phrase.singer, phrase.query);
-              audioBlobCache.set(queryHash, phrase.blob);
+              phraseAudioBlobCache.set(queryHash, phrase.blob);
 
               window.electron.logInfo(`Synthesized.`);
             }
@@ -1760,9 +1759,8 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           renderSampleRate
         );
         const offlineTransport = new OfflineTransport();
-
         const channelStrip = new ChannelStrip(offlineContext);
-        const synth = new Synth(offlineContext);
+        const polySynth = new PolySynth(offlineContext);
         const audioPlayer = new AudioPlayer(offlineContext);
 
         // TODO: この辺りの処理を共通化する
@@ -1787,13 +1785,13 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
             );
             const noteSequence: NoteSequence = {
               type: "note",
-              instrument: synth,
+              instrument: polySynth,
               noteEvents,
             };
             offlineTransport.addSequence(noteSequence);
           }
         }
-        synth.connect(channelStrip.inputNode);
+        polySynth.connect(channelStrip.inputNode);
         audioPlayer.connect(channelStrip.inputNode);
         channelStrip.connect(offlineContext.destination);
         offlineTransport.schedule(renderStartTime, renderDuration);
