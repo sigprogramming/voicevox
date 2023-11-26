@@ -1007,3 +1007,51 @@ export class Clipper {
     this.waveShaperNode.curve = new Float32Array([-1, 0, 1]);
   }
 }
+
+export class AudioDataDecoder {
+  private _numberOfChannels: number;
+  private _sampleRate: number;
+  private offlineAudioContext: OfflineAudioContext;
+
+  get numberOfChannels() {
+    return this._numberOfChannels;
+  }
+
+  get sampleRate() {
+    return this._sampleRate;
+  }
+
+  constructor(numberOfChannels = 2, sampleRate = 48000) {
+    this._numberOfChannels = numberOfChannels;
+    this._sampleRate = sampleRate;
+    this.offlineAudioContext = this.createOfflineAudioContext(
+      numberOfChannels,
+      sampleRate
+    );
+  }
+
+  private createOfflineAudioContext(
+    numberOfChannels: number,
+    sampleRate: number
+  ) {
+    const length = sampleRate;
+    return new OfflineAudioContext(numberOfChannels, length, sampleRate);
+  }
+
+  setFormat(numberOfChannels: number, sampleRate: number) {
+    this._numberOfChannels = numberOfChannels;
+    this._sampleRate = sampleRate;
+    this.offlineAudioContext = this.createOfflineAudioContext(
+      numberOfChannels,
+      sampleRate
+    );
+  }
+
+  async decode(audioData: Blob) {
+    const arrayBuffer = await audioData.arrayBuffer();
+    const audioBuffer = await this.offlineAudioContext.decodeAudioData(
+      arrayBuffer
+    );
+    return audioBuffer;
+  }
+}

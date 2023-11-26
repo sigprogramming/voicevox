@@ -14,6 +14,7 @@ import {
 import { createPartialStore } from "./vuex";
 import { createUILockAction } from "./ui";
 import {
+  AudioDataDecoder,
   AudioEvent,
   AudioPlayer,
   AudioSequence,
@@ -114,13 +115,10 @@ const secondToTick = (seconds: number, tempos: Tempo[], tpqn: number) => {
   );
 };
 
-const generateAudioEvents = async (
-  audioContext: BaseAudioContext,
+const generateAudioEvents = (
   time: number,
-  blob: Blob
-): Promise<AudioEvent[]> => {
-  const arrayBuffer = await blob.arrayBuffer();
-  const buffer = await audioContext.decodeAudioData(arrayBuffer);
+  buffer: AudioBuffer
+): AudioEvent[] => {
   return [{ time, buffer }];
 };
 
@@ -185,7 +183,7 @@ type Phrase = {
   // renderingが進むに連れてデータが代入されていく
   query?: AudioQuery;
   queryHash?: string; // queryの変更を検知するためのハッシュ
-  blob?: Blob;
+  buffer?: AudioBuffer;
   startTime?: number;
   source?: Instrument | AudioPlayer; // ひとまずPhraseに持たせる
   sequence?: Sequence; // ひとまずPhraseに持たせる
@@ -279,14 +277,16 @@ let transport: Transport | undefined;
 let channelStrip: ChannelStrip | undefined;
 let limiter: Limiter | undefined;
 let clipper: Clipper | undefined;
+let audioDataDecoder: AudioDataDecoder | undefined;
 
-// NOTE: テスト時はAudioContextが存在しない
-if (window.AudioContext) {
+// NOTE: テスト時はAudioContextとOfflineAudioContextが存在しない
+if (window.AudioContext && window.OfflineAudioContext) {
   audioContext = new AudioContext();
   transport = new Transport(audioContext);
   channelStrip = new ChannelStrip(audioContext);
   limiter = new Limiter(audioContext);
   clipper = new Clipper(audioContext);
+  audioDataDecoder = new AudioDataDecoder();
 
   channelStrip.output.connect(limiter.input);
   limiter.output.connect(clipper.input);
@@ -295,7 +295,7 @@ if (window.AudioContext) {
 
 const playheadPosition = new FrequentlyUpdatedState(0);
 const allPhrases = new Map<string, Phrase>();
-const phraseAudioBlobCache = new Map<string, Blob>();
+const phraseAudioBufferCache = new Map<string, AudioBuffer>();
 const animationFrameRunner = new AnimationFrameRunner();
 
 export const singingStoreState: SingingStoreState = {
@@ -1112,14 +1112,15 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       const stopRenderingRequested = () => state.stopRenderingRequested;
 
       const render = async () => {
-        if (!audioContext || !transport || !channelStrip) {
+        if (!audioContext || !transport || !channelStrip || !audioDataDecoder) {
           throw new Error(
-            "audioContext or transport or channelStrip is undefined."
+            "audioContext or transport or channelStrip or audioDataDecoder is undefined."
           );
         }
         const audioContextRef = audioContext;
         const transportRef = transport;
         const channelStripRef = channelStrip;
+        const audioDataDecoderRef = audioDataDecoder;
 
         // レンダリング中に変更される可能性のあるデータをコピーする
         const score = copyScore(state.score);
@@ -1201,14 +1202,24 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           const queryHash = await generateAudioQueryHash(phrase.query);
           // クエリが変更されていたら再合成
           if (queryHash !== phrase.queryHash) {
-            phrase.blob = phraseAudioBlobCache.get(queryHash);
-            if (phrase.blob) {
+            phrase.buffer = phraseAudioBufferCache.get(queryHash);
+            if (phrase.buffer) {
               window.electron.logInfo(`Loaded audio buffer from cache.`);
             } else {
               window.electron.logInfo(`Synthesizing...`);
 
-              phrase.blob = await synthesize(phrase.singer, phrase.query);
-              phraseAudioBlobCache.set(queryHash, phrase.blob);
+              const numberOfChannels = phrase.query.outputStereo ? 2 : 1;
+              const sampleRate = phrase.query.outputSamplingRate;
+              if (
+                audioDataDecoderRef.numberOfChannels !== numberOfChannels ||
+                audioDataDecoderRef.sampleRate !== sampleRate
+              ) {
+                audioDataDecoderRef.setFormat(numberOfChannels, sampleRate);
+              }
+
+              const blob = await synthesize(phrase.singer, phrase.query);
+              phrase.buffer = await audioDataDecoderRef.decode(blob);
+              phraseAudioBufferCache.set(queryHash, phrase.buffer);
 
               window.electron.logInfo(`Synthesized.`);
             }
@@ -1224,10 +1235,9 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
             }
 
             const audioPlayer = new AudioPlayer(audioContextRef);
-            const audioEvents = await generateAudioEvents(
-              audioContextRef,
+            const audioEvents = generateAudioEvents(
               phrase.startTime,
-              phrase.blob
+              phrase.buffer
             );
             const audioSequence: AudioSequence = {
               type: "audio",
@@ -1943,12 +1953,11 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
 
           for (const phrase of allPhrases.values()) {
             // TODO: この辺りの処理を共通化する
-            if (phrase.startTime !== undefined && phrase.blob) {
+            if (phrase.startTime !== undefined && phrase.buffer) {
               // レンダリング済みのフレーズの場合
-              const audioEvents = await generateAudioEvents(
-                offlineAudioContext,
+              const audioEvents = generateAudioEvents(
                 phrase.startTime,
-                phrase.blob
+                phrase.buffer
               );
               const audioPlayer = new AudioPlayer(offlineAudioContext);
               audioPlayer.output.connect(channelStrip.input);
