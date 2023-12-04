@@ -4,6 +4,7 @@
     :class="{
       selected: noteState === 'SELECTED',
       overlapping: noteState === 'OVERLAPPING',
+      'below-pitch': noteState === 'BELOW_PITCH',
     }"
     :style="{
       width: `${width}px`,
@@ -44,7 +45,7 @@ import {
 import ContextMenu from "@/components/ContextMenu.vue";
 import { MenuItemButton } from "@/components/MenuBar.vue";
 
-type NoteState = "NORMAL" | "SELECTED" | "OVERLAPPING";
+type NoteState = "NORMAL" | "SELECTED" | "OVERLAPPING" | "BELOW_PITCH";
 
 export default defineComponent({
   name: "SingSequencerNote",
@@ -92,6 +93,9 @@ export default defineComponent({
       }
       if (state.overlappingNoteIds.has(props.note.id)) {
         return "OVERLAPPING";
+      }
+      if (state.showPitch) {
+        return "BELOW_PITCH";
       }
       return "NORMAL";
     });
@@ -216,6 +220,13 @@ export default defineComponent({
     .note-bar {
       background-color: hsl(130, 35%, 85%);
       border-color: hsl(130, 35%, 90%);
+    }
+  }
+
+  &.below-pitch {
+    .note-bar {
+      background-color: rgba(colors.$primary-rgb, 0.2);
+      border-color: hsl(130, 35%, 80%);
     }
   }
 }

@@ -8,6 +8,11 @@
       :offset="scrollX"
       :num-of-measures="numOfMeasures"
     />
+    <sequencer-ruler
+      class="sequencer-ruler"
+      :offset="scrollX"
+      :num-of-measures="numOfMeasures"
+    />
     <!-- 鍵盤 -->
     <sequencer-keys
       class="sequencer-keys"
@@ -145,6 +150,14 @@
         }"
       ></div>
     </div>
+    <sequencer-pitch
+      v-if="showPitch"
+      class="sequencer-pitch"
+      :offset-x="scrollX"
+      :offset-y="scrollY"
+      :canvas-width="pitchCanvasWidth"
+      :canvas-height="pitchCanvasHeight"
+    />
     <input
       type="range"
       :min="ZOOM_X_MIN"
@@ -209,6 +222,7 @@ import SequencerRuler from "@/components/Sing/SequencerRuler.vue";
 import SequencerKeys from "@/components/Sing/SequencerKeys.vue";
 import SequencerNote from "@/components/Sing/SequencerNote.vue";
 import SequencerPhraseIndicator from "@/components/Sing/SequencerPhraseIndicator.vue";
+import SequencerPitch from "@/components/Sing/SequencerPitch.vue";
 
 type PreviewMode = "ADD" | "MOVE" | "RESIZE_RIGHT" | "RESIZE_LEFT";
 
@@ -224,6 +238,7 @@ export default defineComponent({
     SequencerKeys,
     SequencerNote,
     SequencerPhraseIndicator,
+    SequencerPitch,
   },
   setup() {
     const store = useStore();
@@ -316,8 +331,12 @@ export default defineComponent({
         return { key, x: startX, width: endX - startX };
       });
     });
+    const pitchCanvasWidth = ref(100);
+    const pitchCanvasHeight = ref(100);
+    const showPitch = computed(() => state.showPitch);
     const scrollBarWidth = ref(12);
     const sequencerBody = ref<HTMLElement | null>(null);
+    let resizeObserver: ResizeObserver | undefined;
     // マウスカーソル位置
     let cursorX = 0;
     let cursorY = 0;
@@ -1001,6 +1020,12 @@ export default defineComponent({
       });
 
       document.addEventListener("keydown", handleKeydown);
+
+      resizeObserver = new ResizeObserver(() => {
+        pitchCanvasWidth.value = sequencerBodyElement.clientWidth;
+        pitchCanvasHeight.value = sequencerBodyElement.clientHeight;
+      });
+      resizeObserver.observe(sequencerBodyElement);
     });
 
     onUnmounted(() => {
@@ -1009,6 +1034,8 @@ export default defineComponent({
       });
 
       document.removeEventListener("keydown", handleKeydown);
+
+      resizeObserver?.disconnect();
     });
 
     return {
@@ -1033,6 +1060,9 @@ export default defineComponent({
       scrollY,
       playheadX,
       phraseInfos,
+      pitchCanvasWidth,
+      pitchCanvasHeight,
+      showPitch,
       scrollBarWidth,
       sequencerBody,
       nowPreviewing,
@@ -1160,5 +1190,10 @@ export default defineComponent({
 .sequencer-grid-beat-line {
   backface-visibility: hidden;
   stroke: #d0d0d0;
+}
+
+.sequencer-pitch {
+  grid-row: 2;
+  grid-column: 2;
 }
 </style>
