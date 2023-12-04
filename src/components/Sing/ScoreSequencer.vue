@@ -1,11 +1,19 @@
 <template>
   <div class="score-sequencer">
     <!-- 左上の角 -->
-    <div class="corner"></div>
+    <div class="sequencer-corner"></div>
     <!-- ルーラー -->
-    <sequencer-ruler :offset="scrollX" :num-of-measures="numOfMeasures" />
+    <sequencer-ruler
+      class="sequencer-ruler"
+      :offset="scrollX"
+      :num-of-measures="numOfMeasures"
+    />
     <!-- 鍵盤 -->
-    <sequencer-keys :offset="scrollY" :black-key-width="30" />
+    <sequencer-keys
+      class="sequencer-keys"
+      :offset="scrollY"
+      :black-key-width="30"
+    />
     <!-- シーケンサ -->
     <div
       ref="sequencerBody"
@@ -110,6 +118,13 @@
         ></div>
       </div>
     </div>
+    <sequencer-pitch
+      class="sequencer-pitch"
+      :offset-x="scrollX"
+      :offset-y="scrollY"
+      :canvas-width="pitchCanvasWidth"
+      :canvas-height="pitchCanvasHeight"
+    />
     <!-- NOTE: スクロールバー+ズームレンジ仮 -->
     <input
       type="range"
@@ -152,6 +167,7 @@ import { useStore } from "@/store";
 import SequencerRuler from "@/components/Sing/SequencerRuler.vue";
 import SequencerKeys from "@/components/Sing/SequencerKeys.vue";
 import SequencerNote from "@/components/Sing/SequencerNote.vue";
+import SequencerPitch from "@/components/Sing/SequencerPitch.vue";
 import {
   getMeasureDuration,
   getNoteDuration,
@@ -171,6 +187,7 @@ export default defineComponent({
     SequencerRuler,
     SequencerKeys,
     SequencerNote,
+    SequencerPitch,
   },
   setup() {
     const ZOOM_X_MIN = 0.2;
@@ -274,8 +291,11 @@ export default defineComponent({
       return Math.floor(baseX * zoomX.value);
     });
     const selectedNoteIds = computed(() => state.selectedNoteIds);
+    const pitchCanvasWidth = ref(100);
+    const pitchCanvasHeight = ref(100);
 
     const sequencerBody = ref<HTMLElement | null>(null);
+    let resizeObserver: ResizeObserver | undefined;
 
     // ノートの追加
     const addNote = (event: MouseEvent) => {
@@ -722,12 +742,20 @@ export default defineComponent({
       store.dispatch("ADD_PLAYHEAD_POSITION_CHANGE_LISTENER", {
         listener: playheadPositionChangeListener,
       });
+
+      resizeObserver = new ResizeObserver(() => {
+        pitchCanvasWidth.value = sequencerBodyElement.clientWidth;
+        pitchCanvasHeight.value = sequencerBodyElement.clientHeight;
+      });
+      resizeObserver.observe(sequencerBodyElement);
     });
 
     onUnmounted(() => {
       store.dispatch("REMOVE_PLAYHEAD_POSITION_CHANGE_LISTENER", {
         listener: playheadPositionChangeListener,
       });
+
+      resizeObserver?.disconnect();
     });
 
     return {
@@ -754,6 +782,8 @@ export default defineComponent({
       scrollY,
       playheadX,
       sequencerBody,
+      pitchCanvasWidth,
+      pitchCanvasHeight,
       setZoomX,
       setZoomY,
       addNote,
@@ -782,13 +812,27 @@ export default defineComponent({
   grid-template-columns: 48px 1fr;
 }
 
-.corner {
+.sequencer-corner {
+  grid-row: 1;
+  grid-column: 1;
   background: #fff;
   border-bottom: 1px solid #ccc;
   border-right: 1px solid #ccc;
 }
 
+.sequencer-ruler {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.sequencer-keys {
+  grid-row: 2;
+  grid-column: 1;
+}
+
 .sequencer-body {
+  grid-row: 2;
+  grid-column: 2;
   backface-visibility: hidden;
   overflow: auto;
   position: relative;
@@ -796,6 +840,11 @@ export default defineComponent({
   &.move {
     cursor: move;
   }
+}
+
+.sequencer-pitch {
+  grid-row: 2;
+  grid-column: 2;
 }
 
 .sequencer-body-playhead-wrapper {

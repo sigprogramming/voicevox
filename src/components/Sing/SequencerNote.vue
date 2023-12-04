@@ -217,9 +217,9 @@ export default defineComponent({
   position: relative;
 }
 .sequencer-note-bar-body {
-  fill: colors.$primary;
-  stroke: #fff;
-  stroke-opacity: 0.5;
+  fill: rgba(colors.$primary-rgb, 0.1);
+  stroke: colors.$primary;
+  stroke-opacity: 1;
   position: relative;
   top: 0;
   left: 0;
