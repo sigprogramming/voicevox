@@ -9,7 +9,6 @@ import {
   watch,
   onMounted,
   onUnmounted,
-  toRefs,
   toRaw,
 } from "vue";
 import * as PIXI from "pixi.js";
@@ -22,7 +21,7 @@ import {
   tickToBaseX,
 } from "@/helpers/singHelper";
 
-const generateSectorVertices = (
+const generateCircularSectorVertices = (
   startAngle: number,
   arcAngle: number,
   radius: number
@@ -106,27 +105,27 @@ export class PitchLine {
   }
 
   private generateSegmentVertices(width: number) {
+    const halfWidth = width / 2;
     const rectangleVertices = generateRectangleVertices(
-      -(width / 2),
+      -halfWidth,
       0,
       width,
       1
     );
-    const leftSectorVertices = generateSectorVertices(
+    const leftSectorVertices = generateCircularSectorVertices(
       Math.PI / 2,
       Math.PI,
-      width / 2
+      halfWidth
     );
-    const rightSectorVertices = generateSectorVertices(
+    const rightSectorVertices = generateCircularSectorVertices(
       -Math.PI / 2,
       Math.PI,
-      width / 2
+      halfWidth
     );
     if (width < 2) {
       return rectangleVertices.map((value) => [
-        -(width / 2) + width * value[1],
-        value[0],
-        value[1],
+        -halfWidth + width * value[1],
+        ...value,
       ]);
     } else {
       return [
@@ -156,13 +155,13 @@ export default defineComponent({
     canvasHeight: { type: Number, default: 100 },
   },
   setup(props) {
-    const { canvasWidth, canvasHeight } = toRefs(props);
     const store = useStore();
     const canvasContainer = ref<HTMLElement | null>(null);
 
     let renderer: PIXI.Renderer | undefined;
-    let ticker: PIXI.Ticker | undefined;
     let stage: PIXI.Container | undefined;
+    let requestId: number | undefined;
+    let renderInNextFrame = true;
 
     const pitchLinesMap = new Map<string, PitchLine[]>();
 
@@ -205,7 +204,7 @@ export default defineComponent({
       return voicedSections;
     };
 
-    const update = () => {
+    const render = () => {
       if (!renderer) {
         throw new Error("renderer is undefined.");
       }
@@ -284,14 +283,31 @@ export default defineComponent({
       renderer.render(stage);
     };
 
-    watch([canvasWidth, canvasHeight], () => {
-      if (!renderer) {
-        throw new Error("renderer is undefined.");
+    watch(
+      () => [props.canvasWidth, props.canvasHeight],
+      ([canvasWidth, canvasHeight]) => {
+        if (!renderer) {
+          throw new Error("renderer is undefined.");
+        }
+        const width = Math.ceil(canvasWidth);
+        const height = Math.ceil(canvasHeight);
+        renderer.resize(width, height);
+        renderInNextFrame = true;
       }
-      const width = Math.ceil(canvasWidth.value);
-      const height = Math.ceil(canvasHeight.value);
-      renderer.resize(width, height);
-    });
+    );
+
+    watch(
+      () => [
+        Object.values(store.state.phrases).map((value) => value.query),
+        store.state.sequencerZoomX,
+        store.state.sequencerZoomY,
+        props.offsetX,
+        props.offsetY,
+      ],
+      () => {
+        renderInNextFrame = true;
+      }
+    );
 
     onMounted(() => {
       const canvasContainerElement = canvasContainer.value;
@@ -312,15 +328,22 @@ export default defineComponent({
 
       stage = new PIXI.Container();
 
-      ticker = new PIXI.Ticker();
-      ticker.add(update);
-      ticker.start();
+      const callback = () => {
+        if (renderInNextFrame) {
+          render();
+          renderInNextFrame = false;
+        }
+        requestId = window.requestAnimationFrame(callback);
+      };
+      requestId = window.requestAnimationFrame(callback);
     });
 
     onUnmounted(() => {
-      ticker?.destroy();
       stage?.destroy();
       renderer?.destroy();
+      if (requestId !== undefined) {
+        window.cancelAnimationFrame(requestId);
+      }
     });
 
     return {
