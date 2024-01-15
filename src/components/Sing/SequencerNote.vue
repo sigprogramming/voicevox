@@ -4,7 +4,7 @@
     :class="{
       selected: noteState === 'SELECTED',
       overlapping: noteState === 'OVERLAPPING',
-      'below-pitch': noteState === 'BELOW_PITCH',
+      'below-pitch': showPitch,
     }"
     :style="{
       width: `${width}px`,
@@ -45,7 +45,7 @@ import {
 import ContextMenu from "@/components/ContextMenu.vue";
 import { MenuItemButton } from "@/components/MenuBar.vue";
 
-type NoteState = "NORMAL" | "SELECTED" | "OVERLAPPING" | "BELOW_PITCH";
+type NoteState = "NORMAL" | "SELECTED" | "OVERLAPPING";
 
 export default defineComponent({
   name: "SingSequencerNote",
@@ -94,9 +94,6 @@ export default defineComponent({
       if (state.overlappingNoteIds.has(props.note.id)) {
         return "OVERLAPPING";
       }
-      if (state.showPitch) {
-        return "BELOW_PITCH";
-      }
       return "NORMAL";
     });
     const lyric = computed({
@@ -114,6 +111,7 @@ export default defineComponent({
     const showLyricInput = computed(() => {
       return state.editingLyricNoteId === props.note.id;
     });
+    const showPitch = computed(() => state.showPitch);
     const contextMenu = ref<InstanceType<typeof ContextMenu>>();
     const contextMenuData = ref<[MenuItemButton]>([
       {
@@ -184,6 +182,7 @@ export default defineComponent({
       showLyricInput,
       contextMenu,
       contextMenuData,
+      showPitch,
       onBarMouseDown,
       onRightEdgeMouseDown,
       onLeftEdgeMouseDown,
@@ -204,6 +203,13 @@ export default defineComponent({
   top: 0;
   left: 0;
 
+  &.below-pitch {
+    .note-bar {
+      background-color: rgba(colors.$primary-rgb, 0.18);
+      border-color: hsl(130, 35%, 78%);
+    }
+  }
+
   &.selected {
     // 色は仮
     .note-bar {
@@ -211,8 +217,10 @@ export default defineComponent({
       border-color: hsl(33, 100%, 78%);
     }
 
-    .note-lyric {
-      border-color: hsl(33, 0%, 90%);
+    &.below-pitch {
+      .note-bar {
+        background-color: rgba(hsl(33, 100%, 50%), 0.18);
+      }
     }
   }
 
@@ -220,13 +228,6 @@ export default defineComponent({
     .note-bar {
       background-color: hsl(130, 35%, 85%);
       border-color: hsl(130, 35%, 90%);
-    }
-  }
-
-  &.below-pitch {
-    .note-bar {
-      background-color: rgba(colors.$primary-rgb, 0.2);
-      border-color: hsl(130, 35%, 80%);
     }
   }
 }

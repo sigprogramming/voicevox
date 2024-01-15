@@ -126,6 +126,16 @@
         @lyric-mouse-down="onNoteLyricMouseDown($event, note)"
       />
     </div>
+    <sequencer-pitch
+      v-if="showPitch"
+      class="sequencer-pitch"
+      :style="{
+        marginRight: `${scrollBarWidth}px`,
+        marginBottom: `${scrollBarWidth}px`,
+      }"
+      :offset-x="scrollX"
+      :offset-y="scrollY"
+    />
     <div
       class="sequencer-overlay"
       :style="{
@@ -150,14 +160,6 @@
         }"
       ></div>
     </div>
-    <sequencer-pitch
-      v-if="showPitch"
-      class="sequencer-pitch"
-      :offset-x="scrollX"
-      :offset-y="scrollY"
-      :canvas-width="pitchCanvasWidth"
-      :canvas-height="pitchCanvasHeight"
-    />
     <input
       type="range"
       :min="ZOOM_X_MIN"
@@ -331,12 +333,9 @@ export default defineComponent({
         return { key, x: startX, width: endX - startX };
       });
     });
-    const pitchCanvasWidth = ref(100);
-    const pitchCanvasHeight = ref(100);
     const showPitch = computed(() => state.showPitch);
     const scrollBarWidth = ref(12);
     const sequencerBody = ref<HTMLElement | null>(null);
-    let resizeObserver: ResizeObserver | undefined;
     // マウスカーソル位置
     let cursorX = 0;
     let cursorY = 0;
@@ -1020,12 +1019,6 @@ export default defineComponent({
       });
 
       document.addEventListener("keydown", handleKeydown);
-
-      resizeObserver = new ResizeObserver(() => {
-        pitchCanvasWidth.value = sequencerBodyElement.clientWidth;
-        pitchCanvasHeight.value = sequencerBodyElement.clientHeight;
-      });
-      resizeObserver.observe(sequencerBodyElement);
     });
 
     onUnmounted(() => {
@@ -1034,8 +1027,6 @@ export default defineComponent({
       });
 
       document.removeEventListener("keydown", handleKeydown);
-
-      resizeObserver?.disconnect();
     });
 
     return {
@@ -1060,8 +1051,6 @@ export default defineComponent({
       scrollY,
       playheadX,
       phraseInfos,
-      pitchCanvasWidth,
-      pitchCanvasHeight,
       showPitch,
       scrollBarWidth,
       sequencerBody,
