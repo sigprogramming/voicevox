@@ -8,11 +8,6 @@
       :offset="scrollX"
       :num-of-measures="numOfMeasures"
     />
-    <sequencer-ruler
-      class="sequencer-ruler"
-      :offset="scrollX"
-      :num-of-measures="numOfMeasures"
-    />
     <!-- 鍵盤 -->
     <sequencer-keys
       class="sequencer-keys"

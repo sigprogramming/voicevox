@@ -10,6 +10,7 @@ import {
   onMounted,
   onUnmounted,
   toRaw,
+  computed,
 } from "vue";
 import * as PIXI from "pixi.js";
 import { useStore } from "@/store";
@@ -30,6 +31,10 @@ export default defineComponent({
   },
   setup(props) {
     const store = useStore();
+    const periodicPitches = computed(() => {
+      const phrases = Object.values(store.state.phrases);
+      return phrases.map((value) => value.query?.periodicPitch);
+    });
     const canvasContainer = ref<HTMLElement | null>(null);
     let resizeObserver: ResizeObserver | undefined;
 
@@ -40,7 +45,7 @@ export default defineComponent({
 
     const pitchLinesMap = new Map<string, LineStrip[]>();
 
-    const getVoicedSections = (
+    const searchVoicedSections = (
       periodicPitchData: number[],
       minNumOfFrames: number
     ) => {
@@ -85,6 +90,9 @@ export default defineComponent({
       const offsetX = props.offsetX;
       const offsetY = props.offsetY;
 
+      const pitchLineColor = [0.647, 0.831, 0.678, 1];
+      const pitchLineWidth = 1.5;
+
       for (const [key, pitchLines] of pitchLinesMap) {
         if (!Object.hasOwn(phrases, key)) {
           for (const pitchLine of pitchLines) {
@@ -100,14 +108,15 @@ export default defineComponent({
         const pitchStartTicks = secondToTick(phrase.startTime, tempos, tpqn);
         const periodicPitchData = phrase.query.periodicPitch.data;
         const periodicPitchRate = phrase.query.periodicPitch.rate;
-        const voicedSections = getVoicedSections(periodicPitchData, 2);
+        const voicedSections = searchVoicedSections(periodicPitchData, 2);
         let pitchLines = pitchLinesMap.get(key);
         if (!pitchLines) {
           pitchLines = voicedSections.map((value) => {
-            const numOfPoints = value.endFrame - value.startFrame;
-            const color = [0.647, 0.831, 0.678, 1];
-            const width = 1.5;
-            return new LineStrip(numOfPoints, color, width);
+            return new LineStrip(
+              value.endFrame - value.startFrame,
+              pitchLineColor,
+              pitchLineWidth
+            );
           });
           for (const pitchLine of pitchLines) {
             stage.addChild(pitchLine.mesh as PIXI.DisplayObject);
@@ -120,6 +129,7 @@ export default defineComponent({
           const endFrame = voicedSection.endFrame;
           const numOfFrames = endFrame - startFrame;
           const pitchLine = pitchLines[i];
+          const points: number[][] = [];
           for (let j = 0; j < numOfFrames; j++) {
             const value = periodicPitchData[startFrame + j];
             const ticks =
@@ -131,18 +141,20 @@ export default defineComponent({
             const noteNumber = frequencyToNoteNumber(freq);
             const baseY = noteNumberToBaseY(noteNumber);
             const viewY = baseY * zoomY - offsetY;
-            pitchLine.points[2 * j] = viewX;
-            pitchLine.points[2 * j + 1] = viewY;
+            points.push([viewX, viewY]);
           }
-          pitchLine.update();
+          pitchLine.setPoints(points);
         }
       }
       renderer.render(stage);
     };
 
+    watch(periodicPitches, () => {
+      renderInNextFrame = true;
+    });
+
     watch(
       () => [
-        Object.values(store.state.phrases).map((value) => value.query),
         store.state.sequencerZoomX,
         store.state.sequencerZoomY,
         props.offsetX,

@@ -4,7 +4,7 @@ import fragmentShaderSource from "@/sing/webgl/shaders/fragmentShader.glsl?raw";
 
 export class LineStrip {
   readonly mesh: PIXI.Mesh<PIXI.Shader>;
-  readonly points: Float32Array;
+  private readonly points: Float32Array;
   private readonly buffer: PIXI.Buffer;
 
   constructor(numOfPoints: number, color: number[], width: number) {
@@ -60,7 +60,14 @@ export class LineStrip {
     ];
   }
 
-  update() {
+  setPoints(points: number[][]) {
+    if (points.length !== this.points.length) {
+      throw new Error(`The number of points must be ${this.points.length}.`);
+    }
+    for (let i = 0; i < points.length; i++) {
+      this.points[2 * i] = points[i][0]; // x value
+      this.points[2 * i + 1] = points[i][1]; // y value
+    }
     this.buffer.update(this.points);
   }
 }
