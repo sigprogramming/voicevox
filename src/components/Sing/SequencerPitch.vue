@@ -23,6 +23,13 @@ type VoicedSection = {
   endFrame: number;
 };
 
+type PitchLine = {
+  startFrame: number;
+  endFrame: number;
+  frameTicksArray: number[];
+  lineStrip: LineStrip;
+};
+
 export default defineComponent({
   name: "SingSequencerPitch",
   props: {
@@ -43,7 +50,7 @@ export default defineComponent({
     let requestId: number | undefined;
     let renderInNextFrame = true;
 
-    const pitchLinesMap = new Map<string, LineStrip[]>();
+    const pitchLinesMap = new Map<string, PitchLine[]>();
 
     const searchVoicedSections = (
       periodicPitchData: number[],
@@ -90,60 +97,85 @@ export default defineComponent({
       const offsetX = props.offsetX;
       const offsetY = props.offsetY;
 
-      const pitchLineColor = [0.647, 0.831, 0.678, 1];
+      const pitchLineColor = [0.647, 0.831, 0.678, 1]; // RGBA
       const pitchLineWidth = 1.5;
 
-      for (const [key, pitchLines] of pitchLinesMap) {
-        if (!Object.hasOwn(phrases, key)) {
+      // 無くなったフレーズを調べて、そのフレーズに対応するピッチラインを削除する
+      const deletedPhraseKeys: string[] = [];
+      for (const [phraseKey, pitchLines] of pitchLinesMap) {
+        if (!Object.hasOwn(phrases, phraseKey)) {
+          deletedPhraseKeys.push(phraseKey);
+          // lineStripをステージから削除
           for (const pitchLine of pitchLines) {
-            stage.removeChild(pitchLine.mesh as PIXI.DisplayObject);
+            stage.removeChild(pitchLine.lineStrip.displayObject);
           }
-          pitchLinesMap.delete(key);
         }
       }
-      for (const [key, phrase] of Object.entries(phrases)) {
+      for (const phraseKey of deletedPhraseKeys) {
+        pitchLinesMap.delete(phraseKey);
+      }
+      // ピッチラインの生成・更新を行う
+      for (const [phraseKey, phrase] of Object.entries(phrases)) {
         if (!phrase.query || !phrase.startTime || !phrase.query.periodicPitch) {
           continue;
         }
         const pitchStartTicks = secondToTick(phrase.startTime, tempos, tpqn);
         const periodicPitchData = phrase.query.periodicPitch.data;
         const periodicPitchRate = phrase.query.periodicPitch.rate;
-        const voicedSections = searchVoicedSections(periodicPitchData, 2);
-        let pitchLines = pitchLinesMap.get(key);
+        let pitchLines = pitchLinesMap.get(phraseKey);
+        // フレーズに対応するピッチラインが無かったら生成する
         if (!pitchLines) {
-          pitchLines = voicedSections.map((value) => {
-            return new LineStrip(
-              value.endFrame - value.startFrame,
+          // 有声区間を調べる
+          const voicedSections = searchVoicedSections(periodicPitchData, 2);
+          // 有声区間のピッチラインを生成
+          pitchLines = voicedSections.map((value): PitchLine => {
+            const startFrame = value.startFrame;
+            const endFrame = value.endFrame;
+            const numOfFrames = endFrame - startFrame;
+            // ticksは前もって計算しておく
+            const frameTicksArray: number[] = [];
+            for (let j = 0; j < numOfFrames; j++) {
+              const ticks =
+                pitchStartTicks +
+                secondToTick(
+                  (startFrame + j) / periodicPitchRate,
+                  tempos,
+                  tpqn
+                );
+              frameTicksArray.push(ticks);
+            }
+            const lineStrip = new LineStrip(
+              numOfFrames,
               pitchLineColor,
               pitchLineWidth
             );
+            return { startFrame, endFrame, frameTicksArray, lineStrip };
           });
+          // lineStripをステージに追加
           for (const pitchLine of pitchLines) {
-            stage.addChild(pitchLine.mesh as PIXI.DisplayObject);
+            stage.addChild(pitchLine.lineStrip.displayObject);
           }
-          pitchLinesMap.set(key, pitchLines);
+          pitchLinesMap.set(phraseKey, pitchLines);
         }
-        for (let i = 0; i < voicedSections.length; i++) {
-          const voicedSection = voicedSections[i];
-          const startFrame = voicedSection.startFrame;
-          const endFrame = voicedSection.endFrame;
-          const numOfFrames = endFrame - startFrame;
+        // ピッチライン（lineStrip）を更新
+        for (let i = 0; i < pitchLines.length; i++) {
           const pitchLine = pitchLines[i];
+          const startFrame = pitchLine.startFrame;
+          const endFrame = pitchLine.endFrame;
+          const numOfFrames = endFrame - startFrame;
           const points: number[][] = [];
           for (let j = 0; j < numOfFrames; j++) {
-            const value = periodicPitchData[startFrame + j];
-            const ticks =
-              pitchStartTicks +
-              secondToTick((startFrame + j) / periodicPitchRate, tempos, tpqn);
+            const ticks = pitchLine.frameTicksArray[j];
             const baseX = tickToBaseX(ticks, tpqn);
             const viewX = baseX * zoomX - offsetX;
+            const value = periodicPitchData[startFrame + j];
             const freq = Math.exp(value);
             const noteNumber = frequencyToNoteNumber(freq);
             const baseY = noteNumberToBaseY(noteNumber);
             const viewY = baseY * zoomY - offsetY;
             points.push([viewX, viewY]);
           }
-          pitchLine.setPoints(points);
+          pitchLine.lineStrip.setPoints(points);
         }
       }
       renderer.render(stage);

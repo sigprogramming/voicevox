@@ -3,7 +3,7 @@ import lineStripVertexShaderSource from "@/sing/webgl/shaders/lineStripVertexSha
 import fragmentShaderSource from "@/sing/webgl/shaders/fragmentShader.glsl?raw";
 
 export class LineStrip {
-  readonly mesh: PIXI.Mesh<PIXI.Shader>;
+  readonly displayObject: PIXI.DisplayObject;
   private readonly points: Float32Array;
   private readonly buffer: PIXI.Buffer;
 
@@ -19,6 +19,7 @@ export class LineStrip {
     const points = new Float32Array(numOfPoints * 2);
     const buffer = new PIXI.Buffer(points, false);
     const vertices = this.generateSegmentVertices(width);
+    const sizeOfFloat = 4;
     const geometry = new PIXI.Geometry();
     geometry.instanced = true;
     geometry.instanceCount = numOfPoints - 1;
@@ -29,7 +30,7 @@ export class LineStrip {
       2,
       false,
       PIXI.TYPES.FLOAT,
-      4 * 2,
+      sizeOfFloat * 2,
       0,
       true
     );
@@ -39,13 +40,14 @@ export class LineStrip {
       2,
       false,
       PIXI.TYPES.FLOAT,
-      4 * 2,
-      4 * 2,
+      sizeOfFloat * 2,
+      sizeOfFloat * 2,
       true
     );
+    const mesh = new PIXI.Mesh(geometry, shader);
     this.points = points;
     this.buffer = buffer;
-    this.mesh = new PIXI.Mesh(geometry, shader);
+    this.displayObject = mesh as PIXI.DisplayObject;
   }
 
   private generateSegmentVertices(width: number) {
@@ -61,10 +63,11 @@ export class LineStrip {
   }
 
   setPoints(points: number[][]) {
-    if (points.length !== this.points.length) {
-      throw new Error(`The number of points must be ${this.points.length}.`);
+    const numOfPoints = this.points.length / 2;
+    if (points.length !== numOfPoints) {
+      throw new Error(`The number of points must be ${numOfPoints}.`);
     }
-    for (let i = 0; i < points.length; i++) {
+    for (let i = 0; i < numOfPoints; i++) {
       this.points[2 * i] = points[i][0]; // x value
       this.points[2 * i + 1] = points[i][1]; // y value
     }
