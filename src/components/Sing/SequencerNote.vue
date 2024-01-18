@@ -20,6 +20,7 @@
       <div class="note-right-edge" @mousedown="onRightEdgeMouseDown"></div>
       <context-menu ref="contextMenu" :menudata="contextMenuData" />
     </div>
+    <!-- TODO: ピッチの上に歌詞入力のinputが表示されるようにする -->
     <input
       v-if="showLyricInput"
       v-model.lazy.trim="lyric"
