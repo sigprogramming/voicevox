@@ -12,6 +12,7 @@ import {
   VALUE_INDICATING_NO_DATA,
   convertToFramePhonemes,
   frequencyToNoteNumber,
+  noteNumberToFrequency,
   secondToTick,
 } from "@/sing/domain";
 import {
@@ -21,16 +22,31 @@ import {
   noteNumberToBaseY,
   tickToBaseX,
 } from "@/sing/viewHelper";
-import { Color, LineStrip } from "@/sing/graphics/lineStrip";
+import { LineStrip } from "@/sing/graphics/lineStrip";
 import {
   onMountedOrActivated,
   onUnmountedOrDeactivated,
 } from "@/composables/onMountOrActivate";
 import { ExhaustiveError } from "@/type/utility";
 import { createLogger } from "@/domain/frontend/log";
+import { Interpolate } from "@/sing/utility";
+import { Color } from "@/sing/graphics/color";
+import { Points } from "@/sing/graphics/points";
 import { getLast } from "@/sing/utility";
 import { getOrThrow } from "@/helpers/mapHelper";
 import { EditorFrameAudioQuery } from "@/store/type";
+
+type KnotsData = {
+  xArray: number[];
+  yArray: number[];
+};
+
+type PitchKnots = {
+  readonly color: Color;
+  readonly radius: number;
+  knotsData?: KnotsData;
+  points?: Points;
+};
 
 type PitchLine = {
   color: Ref<Color>;
@@ -102,6 +118,16 @@ const pitchEditLine: PitchLine = {
   width: 2.25,
   pitchDataMap: new Map(),
   lineStripMap: new Map(),
+};
+const interpOriginalPitchLine: PitchLine = {
+  color: new Color(171, 199, 201, 255),
+  width: 1.5,
+  pitchDataMap: new Map(),
+  lineStripMap: new Map(),
+};
+const interpOriginalPitchKnots: PitchKnots = {
+  color: new Color(149, 188, 207, 255),
+  radius: 2,
 };
 
 const canvasContainer = ref<HTMLElement | null>(null);
@@ -221,6 +247,47 @@ const updateLineStrips = (pitchLine: PitchLine) => {
   }
 };
 
+const updatePoints = (pitchKnots: PitchKnots) => {
+  if (stage == undefined) {
+    throw new Error("stage is undefined.");
+  }
+  const tpqn = store.state.tpqn;
+  const zoomX = store.state.sequencerZoomX;
+  const zoomY = store.state.sequencerZoomY;
+  const offsetX = props.offsetX;
+  const offsetY = props.offsetY;
+
+  if (pitchKnots.knotsData == undefined) {
+    return;
+  }
+
+  // pointsがあれば再利用し、なければpointsを作成する
+  const numKnots = pitchKnots.knotsData.xArray.length;
+  if (pitchKnots.points != undefined) {
+    pitchKnots.points.numOfPoints = numKnots;
+  } else {
+    pitchKnots.points = new Points(
+      numKnots,
+      pitchKnots.color,
+      pitchKnots.radius,
+      8,
+    );
+    stage.addChild(pitchKnots.points.displayObject);
+  }
+
+  // ポイントを計算してlineStripに設定＆更新
+  for (let i = 0; i < numKnots; i++) {
+    const ticks = pitchKnots.knotsData.xArray[i];
+    const baseX = tickToBaseX(ticks, tpqn);
+    const x = baseX * zoomX - offsetX;
+    const noteNumber = pitchKnots.knotsData.yArray[i];
+    const baseY = noteNumberToBaseY(noteNumber);
+    const y = baseY * zoomY - offsetY;
+    pitchKnots.points.setPoint(i, x, y);
+  }
+  pitchKnots.points.update();
+};
+
 const render = () => {
   if (renderer == undefined) {
     throw new Error("renderer is undefined.");
@@ -245,6 +312,8 @@ const render = () => {
   // ピッチラインのLineStripを更新する
   updateLineStrips(originalPitchLine);
   updateLineStrips(pitchEditLine);
+  updateLineStrips(interpOriginalPitchLine);
+  updatePoints(interpOriginalPitchKnots);
 
   renderer.render(stage);
 };
@@ -382,6 +451,39 @@ const generatePitchEditData = () => {
   return toPitchData(tempData, frameRate);
 };
 
+const generateInterpOriginalPitchData = (
+  points: { x: number; y: number }[],
+) => {
+  const frameRate = editFrameRate.value;
+
+  const xArray: number[] = [];
+  for (let i = 0; i < 400; i++) {
+    xArray.push(i);
+  }
+  const tempData = Interpolate.catmullRom(points, xArray).map((value) =>
+    noteNumberToFrequency(value),
+  );
+  return toPitchData(tempData, frameRate);
+};
+
+const setKnotsDataToPitchKnots = (points: { x: number; y: number }[]) => {
+  const frameRate = editFrameRate.value;
+
+  const ticksArray: number[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const ticks = secondToTick(
+      points[i].x / frameRate,
+      tempos.value,
+      tpqn.value,
+    );
+    ticksArray.push(ticks);
+  }
+  interpOriginalPitchKnots.knotsData = {
+    xArray: ticksArray,
+    yArray: points.map((value) => value.y),
+  };
+};
+
 const asyncLock = new AsyncLock({ maxPending: 1 });
 
 watch(
@@ -392,6 +494,22 @@ watch(
       async () => {
         const originalPitchData = generateOriginalPitchData();
         await setPitchDataToPitchLine(originalPitchData, originalPitchLine);
+
+        const points = [
+          { x: 100, y: 60 },
+          { x: 160, y: 62 },
+          { x: 165, y: 62 },
+          { x: 180, y: 65 },
+          { x: 220, y: 63 },
+          { x: 290, y: 69 },
+        ];
+        const interpOriginalPitchData = generateInterpOriginalPitchData(points);
+        await setPitchDataToPitchLine(
+          interpOriginalPitchData,
+          interpOriginalPitchLine,
+        );
+        setKnotsDataToPitchKnots(points);
+
         renderInNextFrame = true;
       },
       (err) => {
@@ -519,6 +637,8 @@ onUnmountedOrDeactivated(() => {
   originalPitchLine.lineStripMap.clear();
   pitchEditLine.lineStripMap.forEach((value) => value.destroy());
   pitchEditLine.lineStripMap.clear();
+  interpOriginalPitchLine.lineStripMap.forEach((value) => value.destroy());
+  interpOriginalPitchLine.lineStripMap.clear();
   renderer?.destroy(true);
   resizeObserver?.disconnect();
 });

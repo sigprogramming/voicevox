@@ -1,14 +1,14 @@
 import * as PIXI from "pixi.js";
-import lineStripVertexShaderSource from "@/sing/graphics/shaders/lineStripVertexShader.glsl?raw";
+import lineStripVertexShaderSource from "@/sing/graphics/shaders/pointsVertexShader.glsl?raw";
 import fragmentShaderSource from "@/sing/graphics/shaders/fragmentShader.glsl?raw";
 import { Color } from "@/sing/graphics/color";
 
 /**
- * 複数のポイントから折れ線を引きます。
+ * 複数のポイントを描画します。
  */
-export class LineStrip {
+export class Points {
   readonly color: Color;
-  readonly width: number;
+  readonly radius: number;
   private readonly mesh: PIXI.Mesh<PIXI.Shader>;
   private readonly shader: PIXI.Shader;
   private readonly geometry: PIXI.Geometry;
@@ -31,23 +31,28 @@ export class LineStrip {
     return this.points.length / 2;
   }
   set numOfPoints(value: number) {
-    if (value < 2) {
-      throw new Error("The number of points must be at least 2.");
+    if (value < 1) {
+      throw new Error("The number of points must be at least 1.");
     }
     this.points = new Float32Array(value * 2);
   }
 
   /**
    * @param numOfPoints ポイントの数
-   * @param color 線の色（RGBA）
-   * @param width 線の幅（px）
+   * @param color ポイントの色（RGBA）
+   * @param radius ポイントの半径（px）
    */
-  constructor(numOfPoints: number, color: Color, width: number) {
-    if (numOfPoints < 2) {
-      throw new Error("The number of points must be at least 2.");
+  constructor(
+    numOfPoints: number,
+    color: Color,
+    radius: number,
+    resolution: number,
+  ) {
+    if (numOfPoints < 1) {
+      throw new Error("The number of points must be at least 1.");
     }
     this.color = color;
-    this.width = width;
+    this.radius = radius;
     this.shader = PIXI.Shader.from(
       lineStripVertexShaderSource,
       fragmentShaderSource,
@@ -55,14 +60,14 @@ export class LineStrip {
     );
     this.points = new Float32Array(numOfPoints * 2);
     this.pointsBuffer = new PIXI.Buffer(this.points, false);
-    const vertices = this.generateLineSegmentVertices(width);
+    const vertices = this.generatePointVertices(radius, resolution);
     const sizeOfFloat = 4;
     this.geometry = new PIXI.Geometry();
     this.geometry.instanced = true;
-    this.geometry.instanceCount = numOfPoints - 1;
+    this.geometry.instanceCount = numOfPoints;
     this.geometry.addAttribute("pos", vertices.flat(), 3);
     this.geometry.addAttribute(
-      "pointA",
+      "point",
       this.pointsBuffer,
       2,
       false,
@@ -71,29 +76,19 @@ export class LineStrip {
       0,
       true,
     );
-    this.geometry.addAttribute(
-      "pointB",
-      this.pointsBuffer,
-      2,
-      false,
-      PIXI.TYPES.FLOAT,
-      sizeOfFloat * 2,
-      sizeOfFloat * 2,
-      true,
-    );
     this.mesh = new PIXI.Mesh(this.geometry, this.shader);
   }
 
-  private generateLineSegmentVertices(width: number) {
-    const halfWidth = width / 2;
-    return [
-      [-halfWidth, -halfWidth, 0],
-      [halfWidth, -halfWidth, 1],
-      [halfWidth, halfWidth, 1],
-      [-halfWidth, -halfWidth, 0],
-      [halfWidth, halfWidth, 1],
-      [-halfWidth, halfWidth, 0],
-    ];
+  private generatePointVertices(radius: number, resolution: number) {
+    const vertices: [number, number, number][] = [];
+    for (let i = 0; i < resolution; i++) {
+      const theta0 = (2 * Math.PI * i) / resolution;
+      const theta1 = (2 * Math.PI * (i + 1)) / resolution;
+      vertices.push([0, 0, 0]);
+      vertices.push([Math.cos(theta0) * radius, Math.sin(theta0) * radius, 0]);
+      vertices.push([Math.cos(theta1) * radius, Math.sin(theta1) * radius, 0]);
+    }
+    return vertices;
   }
 
   /**
@@ -105,12 +100,12 @@ export class LineStrip {
   }
 
   /**
-   * LineStripを更新します。（設定されたポイントを適用します）
+   * Pointsを更新します。（設定されたポイントを適用します）
    */
   update() {
     this.pointsBuffer.update(this.points);
-    if (this.geometry.instanceCount !== this.numOfPoints - 1) {
-      this.geometry.instanceCount = this.numOfPoints - 1;
+    if (this.geometry.instanceCount !== this.numOfPoints) {
+      this.geometry.instanceCount = this.numOfPoints;
     }
   }
 
