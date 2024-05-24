@@ -10,17 +10,77 @@ export function getLast<T>(array: T[]) {
   return array[array.length - 1];
 }
 
-export function linearInterpolation(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  x: number,
-) {
-  if (x2 <= x1) {
-    throw new Error("x2 must be greater than x1.");
+export class Interpolate {
+  static linear(x0: number, y0: number, x1: number, y1: number, x: number) {
+    if (x1 <= x0) {
+      throw new Error("x1 must be greater than x0.");
+    }
+    return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0);
   }
-  return y1 + ((y2 - y1) * (x - x1)) / (x2 - x1);
+
+  static cubicHermite(
+    x0: number,
+    y0: number,
+    m0: number,
+    x1: number,
+    y1: number,
+    m1: number,
+    x: number,
+  ) {
+    const t = (x - x0) / (x1 - x0);
+    const h0 = 2 * t ** 3 - 3 * t ** 2 + 1;
+    const h1 = t ** 3 - 2 * t ** 2 + t;
+    const h2 = -2 * t ** 3 + 3 * t ** 2;
+    const h3 = t ** 3 - t ** 2;
+    return y0 * h0 + m0 * (x1 - x0) * h1 + y1 * h2 + m1 * (x1 - x0) * h3;
+  }
+
+  static catmullRom(pArray: { x: number; y: number }[], xArray: number[]) {
+    if (pArray.length < 2) {
+      throw new Error("pArray.length must be at least 2.");
+    }
+    const n = pArray.length;
+    const firstP = pArray[0];
+    const lastP = pArray[n - 1];
+
+    const calcM = (i: number) => {
+      const p0 = pArray[Math.max(0, i - 1)];
+      const p1 = pArray[Math.min(n - 1, i + 1)];
+      return (p1.y - p0.y) / (p1.x - p0.x);
+    };
+
+    const mArray: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const m = calcM(i);
+      mArray.push(m);
+    }
+
+    const yArray: number[] = [];
+    for (const x of xArray) {
+      if (x < firstP.x) {
+        const m = calcM(0);
+        const y = firstP.y + (x - firstP.x) * m;
+        yArray.push(y);
+      } else if (x >= lastP.x) {
+        const m = calcM(n - 1);
+        const y = lastP.y + (x - lastP.x) * m;
+        yArray.push(y);
+      } else {
+        for (let i = 0; i < n - 1; i++) {
+          if (x < pArray[i + 1].x) {
+            const p0 = pArray[i];
+            const p1 = pArray[i + 1];
+            const m0 = calcM(i);
+            const m1 = calcM(i + 1);
+            const y = this.cubicHermite(p0.x, p0.y, m0, p1.x, p1.y, m1, x);
+            yArray.push(y);
+            break;
+          }
+        }
+      }
+    }
+    return yArray;
+  }
 }
 
 function ceilToOdd(value: number) {

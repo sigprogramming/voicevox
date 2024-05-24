@@ -84,7 +84,7 @@ import { getDoremiFromNoteNumber } from "@/sing/viewHelper";
 import {
   AnimationTimer,
   createPromiseThatResolvesWhen,
-  linearInterpolation,
+  Interpolate,
   round,
 } from "@/sing/utility";
 import { getWorkaroundKeyRangeAdjustment } from "@/sing/workaroundKeyRangeAdjustment";
@@ -1181,8 +1181,8 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           frameAudioQuery.volume[lastPauStartFrame] *= 0.5;
         } else {
           for (let i = 0; i < fadeOutFrameLength; i++) {
-            frameAudioQuery.volume[lastPauStartFrame + i] *=
-              linearInterpolation(0, 1, fadeOutFrameLength - 1, 0, i);
+            const f = Interpolate.linear(0, 1, fadeOutFrameLength - 1, 0, i);
+            frameAudioQuery.volume[lastPauStartFrame + i] *= f;
           }
         }
         // 音量を0にする
