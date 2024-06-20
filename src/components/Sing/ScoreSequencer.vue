@@ -668,10 +668,8 @@ const previewDrawPitch = () => {
     for (let i = cursorFrame; i <= prevCursorPos.frame; i++) {
       tempPitchEdit.data[i - tempPitchEdit.startFrame] = Math.exp(
         Interpolate.linear(
-          cursorFrame,
-          Math.log(cursorFrequency),
-          prevCursorPos.frame,
-          Math.log(prevCursorPos.frequency),
+          { x: cursorFrame, y: Math.log(cursorFrequency) },
+          { x: prevCursorPos.frame, y: Math.log(prevCursorPos.frequency) },
           i,
         ),
       );
@@ -680,10 +678,8 @@ const previewDrawPitch = () => {
     for (let i = prevCursorPos.frame; i <= cursorFrame; i++) {
       tempPitchEdit.data[i - tempPitchEdit.startFrame] = Math.exp(
         Interpolate.linear(
-          prevCursorPos.frame,
-          Math.log(prevCursorPos.frequency),
-          cursorFrame,
-          Math.log(cursorFrequency),
+          { x: prevCursorPos.frame, y: Math.log(prevCursorPos.frequency) },
+          { x: cursorFrame, y: Math.log(cursorFrequency) },
           i,
         ),
       );

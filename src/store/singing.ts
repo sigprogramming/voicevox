@@ -379,11 +379,9 @@ const muteLastPauSection = (
   } else {
     for (let i = 0; i < fadeOutFrameLength; i++) {
       volume[lastPauStartFrame + i] *= Interpolate.linear(
-        0,
-        1,
-        fadeOutFrameLength - 1,
-        0,
-        i,
+        { x: 0, y: 1 },
+        { x: fadeOutFrameLength - 1, y: 0 },
+        i
       );
     }
   }

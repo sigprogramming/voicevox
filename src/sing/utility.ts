@@ -10,77 +10,211 @@ export function getLast<T>(array: T[]) {
   return array[array.length - 1];
 }
 
+export function calculateDistanceFromPointToLine(
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+) {
+  const lineM = (p1.y - p0.y) / (p1.x - p0.x);
+  return (
+    Math.abs(lineM * p2.x - p2.y + p0.y - lineM * p0.x) /
+    Math.sqrt(lineM ** 2 + 1)
+  );
+}
+
 export class Interpolate {
-  static linear(x0: number, y0: number, x1: number, y1: number, x: number) {
-    if (x1 <= x0) {
-      throw new Error("x1 must be greater than x0.");
+  static linear(
+    p0: { x: number; y: number },
+    p1: { x: number; y: number },
+    x: number,
+  ) {
+    if (p1.x <= p0.x) {
+      throw new Error("p1.x must be greater than p0.x.");
     }
-    return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0);
+    const m = (p1.y - p0.y) / (p1.x - p0.x);
+    return p0.y + (x - p0.x) * m;
   }
 
   static cubicHermite(
-    x0: number,
-    y0: number,
+    p0: { x: number; y: number },
     m0: number,
-    x1: number,
-    y1: number,
+    p1: { x: number; y: number },
     m1: number,
     x: number,
   ) {
-    const t = (x - x0) / (x1 - x0);
+    const dx = p1.x - p0.x;
+    const t = (x - p0.x) / dx;
     const h0 = 2 * t ** 3 - 3 * t ** 2 + 1;
     const h1 = t ** 3 - 2 * t ** 2 + t;
     const h2 = -2 * t ** 3 + 3 * t ** 2;
     const h3 = t ** 3 - t ** 2;
-    return y0 * h0 + m0 * (x1 - x0) * h1 + y1 * h2 + m1 * (x1 - x0) * h3;
+    return p0.y * h0 + m0 * dx * h1 + p1.y * h2 + m1 * dx * h3;
   }
 
-  static catmullRom(pArray: { x: number; y: number }[], xArray: number[]) {
-    if (pArray.length < 2) {
-      throw new Error("pArray.length must be at least 2.");
+  static catmullRom(points: { x: number; y: number }[], xValues: number[]) {
+    if (points.length < 2) {
+      throw new Error("points.length must be at least 2.");
     }
-    const n = pArray.length;
-    const firstP = pArray[0];
-    const lastP = pArray[n - 1];
+    const n = points.length;
+    const firstP = points[0];
+    const lastP = points[n - 1];
 
-    const calcM = (i: number) => {
-      const p0 = pArray[Math.max(0, i - 1)];
-      const p1 = pArray[Math.min(n - 1, i + 1)];
-      return (p1.y - p0.y) / (p1.x - p0.x);
-    };
-
-    const mArray: number[] = [];
+    const mValues: number[] = [];
     for (let i = 0; i < n; i++) {
-      const m = calcM(i);
-      mArray.push(m);
+      const p0 = points[Math.max(0, i - 1)];
+      const p1 = points[Math.min(n - 1, i + 1)];
+      const m = (p1.y - p0.y) / (p1.x - p0.x);
+      mValues.push(m);
     }
 
-    const yArray: number[] = [];
-    for (const x of xArray) {
+    const yValues: number[] = [];
+    for (const x of xValues) {
       if (x < firstP.x) {
-        const m = calcM(0);
+        const m = mValues[0];
         const y = firstP.y + (x - firstP.x) * m;
-        yArray.push(y);
+        yValues.push(y);
       } else if (x >= lastP.x) {
-        const m = calcM(n - 1);
+        const m = mValues[n - 1];
         const y = lastP.y + (x - lastP.x) * m;
-        yArray.push(y);
+        yValues.push(y);
       } else {
         for (let i = 0; i < n - 1; i++) {
-          if (x < pArray[i + 1].x) {
-            const p0 = pArray[i];
-            const p1 = pArray[i + 1];
-            const m0 = calcM(i);
-            const m1 = calcM(i + 1);
-            const y = this.cubicHermite(p0.x, p0.y, m0, p1.x, p1.y, m1, x);
-            yArray.push(y);
+          if (x < points[i + 1].x) {
+            const p0 = points[i];
+            const p1 = points[i + 1];
+            const m0 = mValues[i];
+            const m1 = mValues[i + 1];
+            const y = this.cubicHermite(p0, m0, p1, m1, x);
+            yValues.push(y);
             break;
           }
         }
       }
     }
-    return yArray;
+    return yValues;
   }
+
+  static pchip(points: { x: number; y: number }[], xValues: number[]) {
+    if (points.length < 2) {
+      throw new Error("points.length must be at least 2.");
+    }
+    const n = points.length;
+    const firstP = points[0];
+    const lastP = points[n - 1];
+
+    const mValues: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const p0 = points[Math.max(0, i - 1)];
+      const p1 = points[i];
+      const p2 = points[Math.min(n - 1, i + 1)];
+      const dx = p2.x - p0.x;
+      const dy0 = p1.y - p0.y;
+      const dy1 = p2.y - p1.y;
+      const m = dy0 * dy1 <= 0 ? 0 : (dy0 + dy1) / dx;
+      mValues.push(m);
+    }
+    for (let i = 0; i < n - 1; i++) {
+      const m0 = mValues[i];
+      const m1 = mValues[i + 1];
+      const p0 = points[i];
+      const p1 = points[i + 1];
+      const dx = p1.x - p0.x;
+      const dy = p1.y - p0.y;
+      if (dy !== 0) {
+        const d = dy / dx;
+        const a = m0 / d;
+        const b = m1 / d;
+        const t = 3 / Math.sqrt(a * a + b * b);
+        if (t < 1) {
+          mValues[i] = t * a * d;
+          mValues[i + 1] = t * b * d;
+        }
+      }
+    }
+
+    const yValues: number[] = [];
+    for (const x of xValues) {
+      if (x < firstP.x) {
+        const m = mValues[0];
+        const y = firstP.y + (x - firstP.x) * m;
+        yValues.push(y);
+      } else if (x >= lastP.x) {
+        const m = mValues[n - 1];
+        const y = lastP.y + (x - lastP.x) * m;
+        yValues.push(y);
+      } else {
+        for (let i = 0; i < n - 1; i++) {
+          if (x < points[i + 1].x) {
+            const p0 = points[i];
+            const p1 = points[i + 1];
+            const m0 = mValues[i];
+            const m1 = mValues[i + 1];
+            const y = this.cubicHermite(p0, m0, p1, m1, x);
+            yValues.push(y);
+            break;
+          }
+        }
+      }
+    }
+    return yValues;
+  }
+}
+
+export function differentiate(yValues: number[]) {
+  const n = yValues.length;
+  const diffArray: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const y0 = yValues[Math.max(0, i - 1)];
+    const y1 = yValues[Math.min(n - 1, i + 1)];
+    diffArray.push((y1 - y0) / 2);
+  }
+  return diffArray;
+}
+
+export function iterativeEndPointFit(
+  points: { x: number; y: number }[],
+  epsilon: number,
+) {
+  for (let i = 1; i < points.length; i++) {
+    if (points[i - 1].x > points[i].x) {
+      throw new Error("Points must be sorted by x coordinate.");
+    }
+  }
+  const markedPoints = [points[0], getLast(points)];
+  const pointsWaitingToBeProcessed = [points];
+  while (true) {
+    const pointsToProcess = pointsWaitingToBeProcessed.pop();
+    if (pointsToProcess == undefined) {
+      break;
+    }
+    if (pointsToProcess.length <= 2) {
+      continue;
+    }
+    const p0 = pointsToProcess[0];
+    const p1 = getLast(pointsToProcess);
+    let farthestPointIndex = 1;
+    let farthestPointD = 0;
+    for (let i = 1; i < pointsToProcess.length - 1; i++) {
+      const p2 = pointsToProcess[i];
+      const d = Math.abs(p2.y - Interpolate.linear(p0, p1, p2.x));
+      if (d > farthestPointD) {
+        farthestPointD = d;
+        farthestPointIndex = i;
+      }
+    }
+    if (farthestPointD >= epsilon) {
+      const farthestPoint = pointsToProcess[farthestPointIndex];
+      markedPoints.push(farthestPoint);
+      const slicedPoints1 = pointsToProcess.slice(0, farthestPointIndex + 1);
+      const slicedPoints2 = pointsToProcess.slice(
+        farthestPointIndex,
+        pointsToProcess.length,
+      );
+      pointsWaitingToBeProcessed.push(slicedPoints1);
+      pointsWaitingToBeProcessed.push(slicedPoints2);
+    }
+  }
+  return markedPoints.sort((a, b) => a.x - b.x);
 }
 
 function ceilToOdd(value: number) {
