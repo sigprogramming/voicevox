@@ -29,7 +29,7 @@ import {
 } from "@/composables/onMountOrActivate";
 import { ExhaustiveError } from "@/type/utility";
 import { createLogger } from "@/domain/frontend/log";
-import { Interpolate } from "@/sing/utility";
+import { Interpolate, iterativeEndPointFit } from "@/sing/utility";
 import { Color } from "@/sing/graphics/color";
 import { Points } from "@/sing/graphics/points";
 import { getLast } from "@/sing/utility";
@@ -91,8 +91,8 @@ const interpOriginalPitchLine: PitchLine = {
   lineStripMap: new Map(),
 };
 const interpOriginalPitchKnots: PitchKnots = {
-  color: new Color(149, 188, 207, 255),
-  radius: 2,
+  color: new Color(212, 154, 148, 255),
+  radius: 3,
 };
 
 const canvasContainer = ref<HTMLElement | null>(null);
@@ -102,12 +102,14 @@ let canvasHeight: number | undefined;
 
 let renderer: PIXI.Renderer | undefined;
 let stage: PIXI.Container | undefined;
+let lineStripsContainer: PIXI.Container | undefined;
+let pointsContainer: PIXI.Container | undefined;
 let requestId: number | undefined;
 let renderInNextFrame = false;
 
 const updateLineStrips = (pitchLine: PitchLine) => {
-  if (stage == undefined) {
-    throw new Error("stage is undefined.");
+  if (lineStripsContainer == undefined) {
+    throw new Error("lineStripsContainer is undefined.");
   }
   if (canvasWidth == undefined) {
     throw new Error("canvasWidth is undefined.");
@@ -124,7 +126,7 @@ const updateLineStrips = (pitchLine: PitchLine) => {
   // 無くなったピッチデータを調べて、そのピッチデータに対応するLineStripを削除する
   for (const [key, lineStrip] of pitchLine.lineStripMap) {
     if (!pitchLine.pitchDataMap.has(key)) {
-      stage.removeChild(lineStrip.displayObject);
+      lineStripsContainer.removeChild(lineStrip.displayObject);
       removedLineStrips.push(lineStrip);
       pitchLine.lineStripMap.delete(key);
     }
@@ -150,7 +152,7 @@ const updateLineStrips = (pitchLine: PitchLine) => {
     } else {
       lineStrip = new LineStrip(dataLength, pitchLine.color, pitchLine.width);
     }
-    stage.addChild(lineStrip.displayObject);
+    lineStripsContainer.addChild(lineStrip.displayObject);
     pitchLine.lineStripMap.set(key, lineStrip);
   }
 
@@ -195,8 +197,8 @@ const updateLineStrips = (pitchLine: PitchLine) => {
 };
 
 const updatePoints = (pitchKnots: PitchKnots) => {
-  if (stage == undefined) {
-    throw new Error("stage is undefined.");
+  if (pointsContainer == undefined) {
+    throw new Error("pointsContainer is undefined.");
   }
   const tpqn = store.state.tpqn;
   const zoomX = store.state.sequencerZoomX;
@@ -204,7 +206,10 @@ const updatePoints = (pitchKnots: PitchKnots) => {
   const offsetX = props.offsetX;
   const offsetY = props.offsetY;
 
-  if (pitchKnots.knotsData == undefined) {
+  if (
+    pitchKnots.knotsData == undefined ||
+    pitchKnots.knotsData.xArray.length === 0
+  ) {
     return;
   }
 
@@ -219,7 +224,7 @@ const updatePoints = (pitchKnots: PitchKnots) => {
       pitchKnots.radius,
       8,
     );
-    stage.addChild(pitchKnots.points.displayObject);
+    pointsContainer.addChild(pitchKnots.points.displayObject);
   }
 
   // ポイントを計算してlineStripに設定＆更新
@@ -243,33 +248,33 @@ const render = () => {
     throw new Error("stage is undefined.");
   }
 
-  // シンガーが未設定の場合はピッチラインをすべて非表示にして終了
   const singer = store.getters.SELECTED_TRACK.singer;
-  if (!singer) {
-    for (const lineStrip of originalPitchLine.lineStripMap.values()) {
-      lineStrip.renderable = false;
-    }
-    for (const lineStrip of pitchEditLine.lineStripMap.values()) {
-      lineStrip.renderable = false;
-    }
-    renderer.render(stage);
-    return;
+  if (singer) {
+    stage.renderable = true;
+    updateLineStrips(originalPitchLine);
+    updateLineStrips(pitchEditLine);
+    updateLineStrips(interpOriginalPitchLine);
+    updatePoints(interpOriginalPitchKnots);
+  } else {
+    // シンガーが未設定の場合はピッチラインをすべて非表示にして終了
+    stage.renderable = false;
   }
-
-  // ピッチラインのLineStripを更新する
-  updateLineStrips(originalPitchLine);
-  updateLineStrips(pitchEditLine);
-  updateLineStrips(interpOriginalPitchLine);
-  updatePoints(interpOriginalPitchKnots);
-
   renderer.render(stage);
 };
 
-const toPitchData = (framewiseData: number[], frameRate: number): PitchData => {
+const toPitchData = (
+  startFrame: number,
+  framewiseData: number[],
+  frameRate: number,
+): PitchData => {
   const data = framewiseData;
   const ticksArray: number[] = [];
   for (let i = 0; i < data.length; i++) {
-    const ticks = secondToTick(i / frameRate, tempos.value, tpqn.value);
+    const ticks = secondToTick(
+      (startFrame + i) / frameRate,
+      tempos.value,
+      tpqn.value,
+    );
     ticksArray.push(ticks);
   }
   return { ticksArray, data };
@@ -292,26 +297,20 @@ const splitPitchData = (pitchData: PitchData, delimiter: number) => {
   return pitchDataArray;
 };
 
-const setPitchDataToPitchLine = async (
-  pitchData: PitchData,
+const setPitchDataArrayToPitchLine = async (
+  pitchDataArray: PitchData[],
   pitchLine: PitchLine,
 ) => {
-  const partialPitchDataArray = splitPitchData(
-    pitchData,
-    VALUE_INDICATING_NO_DATA,
-  ).filter((value) => value.data.length >= 2);
-
   pitchLine.pitchDataMap.clear();
-  for (const partialPitchData of partialPitchDataArray) {
-    const hash = await calculatePitchDataHash(partialPitchData);
-    pitchLine.pitchDataMap.set(hash, partialPitchData);
+  for (const pitchData of pitchDataArray) {
+    const hash = await calculatePitchDataHash(pitchData);
+    pitchLine.pitchDataMap.set(hash, pitchData);
   }
 };
 
-const generateOriginalPitchData = () => {
+const generateOriginalPitchFramewiseData = (frameRate: number) => {
   const unvoicedPhonemes = UNVOICED_PHONEMES;
   const singingGuidesValue = singingGuides.value;
-  const frameRate = editFrameRate.value; // f0（元のピッチ）は編集フレームレートで表示する
 
   // 歌い方のf0を結合してピッチデータを生成する
   const tempData: number[] = [];
@@ -360,12 +359,10 @@ const generateOriginalPitchData = () => {
       }
     }
   }
-  return toPitchData(tempData, frameRate);
+  return tempData;
 };
 
-const generatePitchEditData = () => {
-  const frameRate = editFrameRate.value;
-
+const generatePitchEditFramewiseData = () => {
   const tempData = [...pitchEditData.value];
   // プレビュー中のピッチ編集があれば、適用する
   if (previewPitchEdit.value != undefined) {
@@ -396,40 +393,11 @@ const generatePitchEditData = () => {
       throw new ExhaustiveError(previewPitchEditType);
     }
   }
-  return toPitchData(tempData, frameRate);
+  return tempData;
 };
 
-const generateInterpOriginalPitchData = (
-  points: { x: number; y: number }[],
-) => {
-  const frameRate = editFrameRate.value;
-
-  const xArray: number[] = [];
-  for (let i = 0; i < 400; i++) {
-    xArray.push(i);
-  }
-  const tempData = Interpolate.catmullRom(points, xArray).map((value) =>
-    noteNumberToFrequency(value),
-  );
-  return toPitchData(tempData, frameRate);
-};
-
-const setKnotsDataToPitchKnots = (points: { x: number; y: number }[]) => {
-  const frameRate = editFrameRate.value;
-
-  const ticksArray: number[] = [];
-  for (let i = 0; i < points.length; i++) {
-    const ticks = secondToTick(
-      points[i].x / frameRate,
-      tempos.value,
-      tpqn.value,
-    );
-    ticksArray.push(ticks);
-  }
-  interpOriginalPitchKnots.knotsData = {
-    xArray: ticksArray,
-    yArray: points.map((value) => value.y),
-  };
+const setKnotsDataToPitchKnots = (knotsData: KnotsData) => {
+  interpOriginalPitchKnots.knotsData = knotsData;
 };
 
 const asyncLock = new AsyncLock({ maxPending: 1 });
@@ -440,23 +408,14 @@ watch(
     asyncLock.acquire(
       "originalPitch",
       async () => {
-        const originalPitchData = generateOriginalPitchData();
-        await setPitchDataToPitchLine(originalPitchData, originalPitchLine);
-
-        const points = [
-          { x: 100, y: 60 },
-          { x: 160, y: 62 },
-          { x: 165, y: 62 },
-          { x: 180, y: 65 },
-          { x: 220, y: 63 },
-          { x: 290, y: 69 },
-        ];
-        const interpOriginalPitchData = generateInterpOriginalPitchData(points);
-        await setPitchDataToPitchLine(
-          interpOriginalPitchData,
-          interpOriginalPitchLine,
-        );
-        setKnotsDataToPitchKnots(points);
+        const frameRate = editFrameRate.value;
+        const framewiseData = generateOriginalPitchFramewiseData(frameRate);
+        const pitchData = toPitchData(0, framewiseData, frameRate);
+        const pitchDataArray = splitPitchData(
+          pitchData,
+          VALUE_INDICATING_NO_DATA,
+        ).filter((value) => value.data.length >= 2);
+        await setPitchDataArrayToPitchLine(pitchDataArray, originalPitchLine);
 
         renderInNextFrame = true;
       },
@@ -476,8 +435,49 @@ watch(
     asyncLock.acquire(
       "pitchEdit",
       async () => {
-        const pitchEditData = generatePitchEditData();
-        await setPitchDataToPitchLine(pitchEditData, pitchEditLine);
+        const frameRate = editFrameRate.value;
+        const framewiseData = generatePitchEditFramewiseData();
+        const pitchData = toPitchData(0, framewiseData, frameRate);
+        const pitchDataArray = splitPitchData(
+          pitchData,
+          VALUE_INDICATING_NO_DATA,
+        ).filter((value) => value.data.length >= 2);
+        await setPitchDataArrayToPitchLine(pitchDataArray, pitchEditLine);
+
+        const interpPitchDataArray: PitchData[] = [];
+        const knotsData: KnotsData = { xArray: [], yArray: [] };
+        for (const pitchData of pitchDataArray) {
+          const points1: { x: number; y: number }[] = [];
+          for (let i = 0; i < pitchData.ticksArray.length; i++) {
+            const ticks = pitchData.ticksArray[i];
+            const freq = pitchData.data[i];
+            const noteNumber = frequencyToNoteNumber(freq);
+            points1.push({ x: ticks, y: noteNumber });
+          }
+          const points2 = iterativeEndPointFit(points1, 0.12);
+          knotsData.xArray.push(...points2.map((value) => value.x));
+          knotsData.yArray.push(...points2.map((value) => value.y));
+          const period = 10;
+          const minX = points2[0].x;
+          const maxX = getLast(points2).x;
+          const xValues: number[] = [];
+          for (let i = minX; i < maxX; i += period) {
+            xValues.push(i);
+          }
+          xValues.push(maxX);
+          const yValues = Interpolate.catmullRom(points2, xValues);
+          const interpPitchData: PitchData = {
+            ticksArray: xValues,
+            data: yValues.map((value) => noteNumberToFrequency(value)),
+          };
+          interpPitchDataArray.push(interpPitchData);
+        }
+        await setPitchDataArrayToPitchLine(
+          interpPitchDataArray,
+          interpOriginalPitchLine,
+        );
+        setKnotsDataToPitchKnots(knotsData);
+
         renderInNextFrame = true;
       },
       (err) => {
@@ -524,6 +524,11 @@ onMountedOrActivated(() => {
     autoDensity: true,
   });
   stage = new PIXI.Container();
+  lineStripsContainer = new PIXI.Container();
+  pointsContainer = new PIXI.Container();
+
+  stage.addChild(lineStripsContainer);
+  stage.addChild(pointsContainer);
 
   // webGLVersionをチェックする
   // 2未満の場合、ピッチの表示ができないのでエラーとしてロギングする

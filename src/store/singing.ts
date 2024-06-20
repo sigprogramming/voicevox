@@ -1181,7 +1181,11 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           frameAudioQuery.volume[lastPauStartFrame] *= 0.5;
         } else {
           for (let i = 0; i < fadeOutFrameLength; i++) {
-            const f = Interpolate.linear(0, 1, fadeOutFrameLength - 1, 0, i);
+            const f = Interpolate.linear(
+              { x: 0, y: 1 },
+              { x: fadeOutFrameLength - 1, y: 0 },
+              i,
+            );
             frameAudioQuery.volume[lastPauStartFrame + i] *= f;
           }
         }
