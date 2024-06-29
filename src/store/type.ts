@@ -1210,6 +1210,7 @@ export type SingingCommandStoreTypes = {
  */
 
 export type CommandStoreState = {
+  measuredTimes: number[];
   undoCommands: Record<EditorType, Command[]>;
   redoCommands: Record<EditorType, Command[]>;
 };

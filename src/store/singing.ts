@@ -2318,7 +2318,7 @@ export const singingCommandStore = transformCommandStore(
       mutation(draft, { notes }) {
         singingStore.mutations.ADD_NOTES(draft, { notes });
       },
-      action({ getters, commit, dispatch }, { notes }: { notes: Note[] }) {
+      action({ state, getters, commit }, { notes }: { notes: Note[] }) {
         const existingNoteIds = getters.NOTE_IDS;
         const isValidNotes = notes.every((value) => {
           return !existingNoteIds.has(value.id) && isValidNote(value);
@@ -2326,16 +2326,30 @@ export const singingCommandStore = transformCommandStore(
         if (!isValidNotes) {
           throw new Error("The notes are invalid.");
         }
-        commit("COMMAND_ADD_NOTES", { notes });
 
-        dispatch("RENDER");
+        const note = notes[0];
+        for (let i = 0; i < 600; i++) {
+          commit("COMMAND_ADD_NOTES", {
+            notes: [
+              {
+                ...note,
+                id: i === 0 ? note.id : NoteId(crypto.randomUUID()),
+                position: note.position + note.duration * i,
+              },
+            ],
+          });
+        }
+        console.log(toRaw(state.measuredTimes));
+        commit("CLEAR_COMMANDS");
+
+        // dispatch("RENDER");
       },
     },
     COMMAND_UPDATE_NOTES: {
       mutation(draft, { notes }) {
         singingStore.mutations.UPDATE_NOTES(draft, { notes });
       },
-      action({ getters, commit, dispatch }, { notes }: { notes: Note[] }) {
+      action({ state, getters, commit }, { notes }: { notes: Note[] }) {
         const existingNoteIds = getters.NOTE_IDS;
         const isValidNotes = notes.every((value) => {
           return existingNoteIds.has(value.id) && isValidNote(value);
@@ -2343,9 +2357,13 @@ export const singingCommandStore = transformCommandStore(
         if (!isValidNotes) {
           throw new Error("The notes are invalid.");
         }
-        commit("COMMAND_UPDATE_NOTES", { notes });
 
-        dispatch("RENDER");
+        for (let i = 0; i < notes.length; i++) {
+          commit("COMMAND_UPDATE_NOTES", { notes: [notes[i]] });
+        }
+        console.log(toRaw(state.measuredTimes));
+
+        // dispatch("RENDER");
       },
     },
     COMMAND_REMOVE_NOTES: {

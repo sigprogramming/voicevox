@@ -59,10 +59,15 @@ export const createCommandMutation =
     editor: EditorType,
   ): Mutation<S, M, K> =>
   (state: S, payload: M[K]): void => {
-    const command = recordPatches(payloadRecipe)(state, payload);
+    const [command, measuredTime] = recordPatches(payloadRecipe)(
+      state,
+      payload,
+    );
     applyPatchesImpl(state, command.redoPatches);
     state.undoCommands[editor].push(command);
     state.redoCommands[editor].splice(0);
+    state.measuredTimes.push(measuredTime);
+    console.log(state.measuredTimes.length);
   };
 
 /**
@@ -71,19 +76,25 @@ export const createCommandMutation =
  */
 const recordPatches =
   <S, P>(recipe: PayloadRecipe<S, P>) =>
-  (state: S, payload: P): Command => {
+  (state: S, payload: P): [Command, number] => {
+    const startTime = performance.now();
     const [, doPatches, undoPatches] = immer.produceWithPatches(
       toRaw(state) as S,
       (draft: S) => recipe(draft, payload),
     );
-    return {
-      unixMillisec: new Date().getTime(),
-      redoPatches: doPatches,
-      undoPatches: undoPatches,
-    };
+    const endTime = performance.now();
+    return [
+      {
+        unixMillisec: new Date().getTime(),
+        redoPatches: doPatches,
+        undoPatches: undoPatches,
+      },
+      endTime - startTime,
+    ];
   };
 
 export const commandStoreState: CommandStoreState = {
+  measuredTimes: [],
   undoCommands: {
     talk: [],
     song: [],
@@ -175,6 +186,7 @@ export const commandStore = createPartialStore<CommandStoreTypes>({
       for (const editor of ["talk", "song"] as const) {
         state.undoCommands[editor].splice(0);
         state.redoCommands[editor].splice(0);
+        state.measuredTimes = [];
       }
     },
   },
