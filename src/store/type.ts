@@ -19,7 +19,7 @@ import {
   UserDictWord,
   MorphableTargetInfo,
   FrameAudioQuery,
-  Note as NoteForRequestToEngine,
+  Note as FrameNote,
 } from "@/openapi";
 import {
   CharacterInfo,
@@ -1132,7 +1132,7 @@ export type SingingStoreTypes = {
 
   FETCH_SING_FRAME_VOLUME: {
     action(palyoad: {
-      notes: NoteForRequestToEngine[];
+      notes: FrameNote[];
       query: EditorFrameAudioQuery;
       engineId: EngineId;
       styleId: StyleId;

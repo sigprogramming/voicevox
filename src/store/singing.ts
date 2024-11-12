@@ -42,7 +42,7 @@ import {
   StyleId,
   TrackId,
 } from "@/type/preload";
-import { FramePhoneme, Note as NoteForRequestToEngine } from "@/openapi";
+import { FramePhoneme, Note as FrameNote } from "@/openapi";
 import { ResultError, getValueOrThrow } from "@/type/result";
 import {
   AudioEvent,
@@ -123,11 +123,12 @@ type SnapshotForPhraseRender = Readonly<{
 /**
  * フレーズレンダリングのコンテキスト
  */
-type PhraseRenderContext = Readonly<{
-  snapshot: SnapshotForPhraseRender;
-  trackId: TrackId;
-  phraseKey: PhraseKey;
-}>;
+type PhraseRenderContext = {
+  readonly snapshot: SnapshotForPhraseRender;
+  readonly trackId: TrackId;
+  readonly phraseKey: PhraseKey;
+  frameNotesCache?: FrameNote[];
+};
 
 type PhraseRenderStageId =
   | "queryGeneration"
@@ -260,7 +261,7 @@ type PhraseRenderer = Readonly<{
 /**
  * リクエスト用のノーツ（と休符）を作成する。
  */
-const createNotesForRequestToEngine = (
+const createFrameNotes = (
   firstRestDuration: number,
   lastRestDurationSeconds: number,
   notes: Note[],
@@ -268,7 +269,7 @@ const createNotesForRequestToEngine = (
   tpqn: number,
   frameRate: number,
 ) => {
-  const notesForRequestToEngine: NoteForRequestToEngine[] = [];
+  const frameNotes: FrameNote[] = [];
 
   // 先頭の休符を変換
   const firstRestStartSeconds = tickToSecond(
@@ -279,7 +280,7 @@ const createNotesForRequestToEngine = (
   const firstRestStartFrame = Math.round(firstRestStartSeconds * frameRate);
   const firstRestEndSeconds = tickToSecond(notes[0].position, tempos, tpqn);
   const firstRestEndFrame = Math.round(firstRestEndSeconds * frameRate);
-  notesForRequestToEngine.push({
+  frameNotes.push({
     key: undefined,
     frameLength: firstRestEndFrame - firstRestStartFrame,
     lyric: "",
@@ -295,7 +296,7 @@ const createNotesForRequestToEngine = (
       tpqn,
     );
     const noteOffFrame = Math.round(noteOffSeconds * frameRate);
-    notesForRequestToEngine.push({
+    frameNotes.push({
       id: note.id,
       key: note.noteNumber,
       frameLength: noteOffFrame - noteOnFrame,
@@ -305,26 +306,26 @@ const createNotesForRequestToEngine = (
 
   // 末尾に休符を追加
   const lastRestFrameLength = Math.round(lastRestDurationSeconds * frameRate);
-  notesForRequestToEngine.push({
+  frameNotes.push({
     key: undefined,
     frameLength: lastRestFrameLength,
     lyric: "",
   });
 
   // frameLengthが1以上になるようにする
-  for (let i = 0; i < notesForRequestToEngine.length; i++) {
-    const frameLength = notesForRequestToEngine[i].frameLength;
+  for (let i = 0; i < frameNotes.length; i++) {
+    const frameLength = frameNotes[i].frameLength;
     const frameToShift = Math.max(0, 1 - frameLength);
-    notesForRequestToEngine[i].frameLength += frameToShift;
-    if (i < notesForRequestToEngine.length - 1) {
-      notesForRequestToEngine[i + 1].frameLength -= frameToShift;
+    frameNotes[i].frameLength += frameToShift;
+    if (i < frameNotes.length - 1) {
+      frameNotes[i + 1].frameLength -= frameToShift;
     }
   }
 
-  return notesForRequestToEngine;
+  return frameNotes;
 };
 
-const shiftKeyOfNotes = (notes: NoteForRequestToEngine[], keyShift: number) => {
+const shiftKeyOfNotes = (notes: FrameNote[], keyShift: number) => {
   for (const note of notes) {
     if (note.key != undefined) {
       note.key += keyShift;
@@ -1838,7 +1839,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       const fetchQuery = async (
         engineId: EngineId,
         engineFrameRate: number,
-        notesForRequestToEngine: NoteForRequestToEngine[],
+        frameNotes: FrameNote[],
       ) => {
         try {
           if (!getters.IS_ENGINE_READY(engineId)) {
@@ -1850,7 +1851,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           const query = await instance.invoke(
             "singFrameAudioQuerySingFrameAudioQueryPost",
           )({
-            score: { notes: notesForRequestToEngine },
+            score: { notes: frameNotes },
             speaker: singingTeacherStyleId,
           });
           const editorQuery: EditorFrameAudioQuery = {
@@ -1859,9 +1860,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           };
           return editorQuery;
         } catch (error) {
-          const lyrics = notesForRequestToEngine
-            .map((value) => value.lyric)
-            .join("");
+          const lyrics = frameNotes.map((value) => value.lyric).join("");
           logger.error(
             `Failed to fetch FrameAudioQuery. Lyrics of score are "${lyrics}".`,
             error,
@@ -1870,25 +1869,29 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
         }
       };
 
-      const generateQuery = async (querySource: QuerySource) => {
-        const notesForRequestToEngine = createNotesForRequestToEngine(
-          querySource.firstRestDuration,
-          lastRestDurationSeconds,
-          querySource.notes,
-          querySource.tempos,
-          querySource.tpqn,
-          querySource.engineFrameRate,
-        );
+      const generateQuery = async (
+        context: PhraseRenderContext,
+        querySource: QuerySource,
+      ) => {
+        let frameNotes = context.frameNotesCache;
+        if (frameNotes == undefined) {
+          frameNotes = createFrameNotes(
+            querySource.firstRestDuration,
+            lastRestDurationSeconds,
+            querySource.notes,
+            querySource.tempos,
+            querySource.tpqn,
+            querySource.engineFrameRate,
+          );
+          context.frameNotesCache = frameNotes;
+        }
 
-        shiftKeyOfNotes(
-          notesForRequestToEngine,
-          -querySource.keyRangeAdjustment,
-        );
+        shiftKeyOfNotes(frameNotes, -querySource.keyRangeAdjustment);
 
         const query = await fetchQuery(
           querySource.engineId,
           querySource.engineFrameRate,
-          notesForRequestToEngine,
+          frameNotes,
         );
 
         shiftPitch(query.f0, querySource.keyRangeAdjustment);
@@ -1927,7 +1930,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           if (query != undefined) {
             logger.info(`Loaded query from cache.`);
           } else {
-            query = await generateQuery(querySource);
+            query = await generateQuery(context, querySource);
             const phonemes = getPhonemes(query);
             logger.info(`Generated query. phonemes: ${phonemes}`);
             queryCache.set(queryKey, query);
@@ -2072,30 +2075,32 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       };
 
       const generateSingingVolume = async (
+        context: PhraseRenderContext,
         singingVolumeSource: SingingVolumeSource,
       ) => {
-        const notesForRequestToEngine = createNotesForRequestToEngine(
-          singingVolumeSource.firstRestDuration,
-          lastRestDurationSeconds,
-          singingVolumeSource.notes,
-          singingVolumeSource.tempos,
-          singingVolumeSource.tpqn,
-          singingVolumeSource.engineFrameRate,
-        );
+        let frameNotes = context.frameNotesCache;
+        if (frameNotes == undefined) {
+          frameNotes = createFrameNotes(
+            singingVolumeSource.firstRestDuration,
+            lastRestDurationSeconds,
+            singingVolumeSource.notes,
+            singingVolumeSource.tempos,
+            singingVolumeSource.tpqn,
+            singingVolumeSource.engineFrameRate,
+          );
+          context.frameNotesCache = frameNotes;
+        }
         const queryForVolumeGeneration =
           singingVolumeSource.queryForVolumeGeneration;
 
-        shiftKeyOfNotes(
-          notesForRequestToEngine,
-          -singingVolumeSource.keyRangeAdjustment,
-        );
+        shiftKeyOfNotes(frameNotes, -singingVolumeSource.keyRangeAdjustment);
         shiftPitch(
           queryForVolumeGeneration.f0,
           -singingVolumeSource.keyRangeAdjustment,
         );
 
         const singingVolume = await actions.FETCH_SING_FRAME_VOLUME({
-          notes: notesForRequestToEngine,
+          notes: frameNotes,
           query: queryForVolumeGeneration,
           engineId: singingVolumeSource.engineId,
           styleId: singingTeacherStyleId,
@@ -2150,7 +2155,10 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           if (singingVolume != undefined) {
             logger.info(`Loaded singing volume from cache.`);
           } else {
-            singingVolume = await generateSingingVolume(singingVolumeSource);
+            singingVolume = await generateSingingVolume(
+              context,
+              singingVolumeSource,
+            );
             logger.info(`Generated singing volume.`);
             singingVolumeCache.set(singingVolumeKey, singingVolume);
           }
@@ -2633,7 +2641,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
         engineId,
         styleId,
       }: {
-        notes: NoteForRequestToEngine[];
+        notes: FrameNote[];
         query: EditorFrameAudioQuery;
         engineId: EngineId;
         styleId: StyleId;
