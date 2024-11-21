@@ -29,7 +29,7 @@ import {
 } from "@/composables/onMountOrActivate";
 import { ExhaustiveError } from "@/type/utility";
 import { createLogger } from "@/domain/frontend/log";
-import { Interpolate, iterativeEndPointFit } from "@/sing/utility";
+import { interpolatePchip, iterativeEndPointFit } from "@/sing/utility";
 import { Color } from "@/sing/graphics/color";
 import { Points } from "@/sing/graphics/points";
 import { getLast } from "@/sing/utility";
@@ -416,8 +416,6 @@ const generateOriginalPitchData = () => {
 };
 
 const generatePitchEditData = () => {
-  const frameRate = editorFrameRate.value;
-
   const tempData = [...pitchEditData.value];
   // プレビュー中のピッチ編集があれば、適用する
   if (previewPitchEdit.value != undefined) {
@@ -520,7 +518,7 @@ watch(
             xValues.push(i);
           }
           xValues.push(maxX);
-          const yValues = Interpolate.catmullRom(points2, xValues);
+          const yValues = interpolatePchip(points2, xValues);
           const interpPitchData: PitchData = {
             ticksArray: xValues,
             data: yValues.map((value) => noteNumberToFrequency(value)),

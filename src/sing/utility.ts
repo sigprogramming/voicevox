@@ -22,142 +22,147 @@ export function calculateDistanceFromPointToLine(
   );
 }
 
-export class Interpolate {
-  static linear(
-    p0: { x: number; y: number },
-    p1: { x: number; y: number },
-    x: number,
-  ) {
-    if (p1.x <= p0.x) {
-      throw new Error("p1.x must be greater than p0.x.");
-    }
+export function interpolateLinear(
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  x: number,
+) {
+  if (p1.x <= p0.x) {
+    throw new Error("p1.x must be greater than p0.x.");
+  }
+  const m = (p1.y - p0.y) / (p1.x - p0.x);
+  return p0.y + (x - p0.x) * m;
+}
+
+export function interpolateCubicHermite(
+  p0: { x: number; y: number },
+  m0: number,
+  p1: { x: number; y: number },
+  m1: number,
+  x: number,
+) {
+  const dx = p1.x - p0.x;
+  const t = (x - p0.x) / dx;
+  const h0 = 2 * t ** 3 - 3 * t ** 2 + 1;
+  const h1 = t ** 3 - 2 * t ** 2 + t;
+  const h2 = -2 * t ** 3 + 3 * t ** 2;
+  const h3 = t ** 3 - t ** 2;
+  return p0.y * h0 + m0 * dx * h1 + p1.y * h2 + m1 * dx * h3;
+}
+
+export function interpolateCubicSpline(
+  points: { x: number; y: number }[],
+  xValues: number[],
+) {
+  if (points.length < 2) {
+    throw new Error("points.length must be at least 2.");
+  }
+  const n = points.length;
+  const firstP = points[0];
+  const lastP = points[n - 1];
+
+  const mValues: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[Math.min(n - 1, i + 1)];
     const m = (p1.y - p0.y) / (p1.x - p0.x);
-    return p0.y + (x - p0.x) * m;
+    mValues.push(m);
   }
 
-  static cubicHermite(
-    p0: { x: number; y: number },
-    m0: number,
-    p1: { x: number; y: number },
-    m1: number,
-    x: number,
-  ) {
+  const yValues: number[] = [];
+  for (const x of xValues) {
+    if (x < firstP.x) {
+      const m = mValues[0];
+      const y = firstP.y + (x - firstP.x) * m;
+      yValues.push(y);
+    } else if (x >= lastP.x) {
+      const m = mValues[n - 1];
+      const y = lastP.y + (x - lastP.x) * m;
+      yValues.push(y);
+    } else {
+      for (let i = 0; i < n - 1; i++) {
+        if (x < points[i + 1].x) {
+          const p0 = points[i];
+          const p1 = points[i + 1];
+          const m0 = mValues[i];
+          const m1 = mValues[i + 1];
+          const y = interpolateCubicHermite(p0, m0, p1, m1, x);
+          yValues.push(y);
+          break;
+        }
+      }
+    }
+  }
+  return yValues;
+}
+
+export function interpolatePchip(
+  points: { x: number; y: number }[],
+  xValues: number[],
+) {
+  if (points.length < 2) {
+    throw new Error("points.length must be at least 2.");
+  }
+  const n = points.length;
+  const firstP = points[0];
+  const lastP = points[n - 1];
+
+  const mValues: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[Math.min(n - 1, i + 1)];
+    const dx = p2.x - p0.x;
+    const dy0 = p1.y - p0.y;
+    const dy1 = p2.y - p1.y;
+    const m = dy0 * dy1 <= 0 ? 0 : (dy0 + dy1) / dx;
+    mValues.push(m);
+  }
+  for (let i = 0; i < n - 1; i++) {
+    const m0 = mValues[i];
+    const m1 = mValues[i + 1];
+    const p0 = points[i];
+    const p1 = points[i + 1];
     const dx = p1.x - p0.x;
-    const t = (x - p0.x) / dx;
-    const h0 = 2 * t ** 3 - 3 * t ** 2 + 1;
-    const h1 = t ** 3 - 2 * t ** 2 + t;
-    const h2 = -2 * t ** 3 + 3 * t ** 2;
-    const h3 = t ** 3 - t ** 2;
-    return p0.y * h0 + m0 * dx * h1 + p1.y * h2 + m1 * dx * h3;
+    const dy = p1.y - p0.y;
+    if (dy !== 0) {
+      const d = dy / dx;
+      const a = m0 / d;
+      const b = m1 / d;
+      const n = Math.sqrt(a * a + b * b);
+      if (n > 3) {
+        const t = 3 / n;
+        mValues[i] = t * a * d;
+        mValues[i + 1] = t * b * d;
+      }
+    }
   }
 
-  static catmullRom(points: { x: number; y: number }[], xValues: number[]) {
-    if (points.length < 2) {
-      throw new Error("points.length must be at least 2.");
-    }
-    const n = points.length;
-    const firstP = points[0];
-    const lastP = points[n - 1];
-
-    const mValues: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const p0 = points[Math.max(0, i - 1)];
-      const p1 = points[Math.min(n - 1, i + 1)];
-      const m = (p1.y - p0.y) / (p1.x - p0.x);
-      mValues.push(m);
-    }
-
-    const yValues: number[] = [];
-    for (const x of xValues) {
-      if (x < firstP.x) {
-        const m = mValues[0];
-        const y = firstP.y + (x - firstP.x) * m;
-        yValues.push(y);
-      } else if (x >= lastP.x) {
-        const m = mValues[n - 1];
-        const y = lastP.y + (x - lastP.x) * m;
-        yValues.push(y);
-      } else {
-        for (let i = 0; i < n - 1; i++) {
-          if (x < points[i + 1].x) {
-            const p0 = points[i];
-            const p1 = points[i + 1];
-            const m0 = mValues[i];
-            const m1 = mValues[i + 1];
-            const y = this.cubicHermite(p0, m0, p1, m1, x);
-            yValues.push(y);
-            break;
-          }
+  const yValues: number[] = [];
+  for (const x of xValues) {
+    if (x < firstP.x) {
+      const m = mValues[0];
+      const y = firstP.y + (x - firstP.x) * m;
+      yValues.push(y);
+    } else if (x >= lastP.x) {
+      const m = mValues[n - 1];
+      const y = lastP.y + (x - lastP.x) * m;
+      yValues.push(y);
+    } else {
+      for (let i = 0; i < n - 1; i++) {
+        if (x < points[i + 1].x) {
+          const p0 = points[i];
+          const p1 = points[i + 1];
+          const m0 = mValues[i];
+          const m1 = mValues[i + 1];
+          const y = interpolateCubicHermite(p0, m0, p1, m1, x);
+          yValues.push(y);
+          break;
         }
       }
     }
-    return yValues;
   }
-
-  static pchip(points: { x: number; y: number }[], xValues: number[]) {
-    if (points.length < 2) {
-      throw new Error("points.length must be at least 2.");
-    }
-    const n = points.length;
-    const firstP = points[0];
-    const lastP = points[n - 1];
-
-    const mValues: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const p0 = points[Math.max(0, i - 1)];
-      const p1 = points[i];
-      const p2 = points[Math.min(n - 1, i + 1)];
-      const dx = p2.x - p0.x;
-      const dy0 = p1.y - p0.y;
-      const dy1 = p2.y - p1.y;
-      const m = dy0 * dy1 <= 0 ? 0 : (dy0 + dy1) / dx;
-      mValues.push(m);
-    }
-    for (let i = 0; i < n - 1; i++) {
-      const m0 = mValues[i];
-      const m1 = mValues[i + 1];
-      const p0 = points[i];
-      const p1 = points[i + 1];
-      const dx = p1.x - p0.x;
-      const dy = p1.y - p0.y;
-      if (dy !== 0) {
-        const d = dy / dx;
-        const a = m0 / d;
-        const b = m1 / d;
-        const t = 3 / Math.sqrt(a * a + b * b);
-        if (t < 1) {
-          mValues[i] = t * a * d;
-          mValues[i + 1] = t * b * d;
-        }
-      }
-    }
-
-    const yValues: number[] = [];
-    for (const x of xValues) {
-      if (x < firstP.x) {
-        const m = mValues[0];
-        const y = firstP.y + (x - firstP.x) * m;
-        yValues.push(y);
-      } else if (x >= lastP.x) {
-        const m = mValues[n - 1];
-        const y = lastP.y + (x - lastP.x) * m;
-        yValues.push(y);
-      } else {
-        for (let i = 0; i < n - 1; i++) {
-          if (x < points[i + 1].x) {
-            const p0 = points[i];
-            const p1 = points[i + 1];
-            const m0 = mValues[i];
-            const m1 = mValues[i + 1];
-            const y = this.cubicHermite(p0, m0, p1, m1, x);
-            yValues.push(y);
-            break;
-          }
-        }
-      }
-    }
-    return yValues;
-  }
+  return yValues;
 }
 
 export function differentiate(yValues: number[]) {
@@ -196,7 +201,7 @@ export function iterativeEndPointFit(
     let farthestPointD = 0;
     for (let i = 1; i < pointsToProcess.length - 1; i++) {
       const p2 = pointsToProcess[i];
-      const d = Math.abs(p2.y - Interpolate.linear(p0, p1, p2.x));
+      const d = Math.abs(p2.y - interpolateLinear(p0, p1, p2.x));
       if (d > farthestPointD) {
         farthestPointD = d;
         farthestPointIndex = i;

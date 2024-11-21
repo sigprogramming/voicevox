@@ -217,7 +217,7 @@ import {
   useCommandOrControlKey,
   useShiftKey,
 } from "@/composables/useModifierKey";
-import { applyGaussianFilter, Interpolate } from "@/sing/utility";
+import { applyGaussianFilter, interpolateLinear } from "@/sing/utility";
 import { useLyricInput } from "@/composables/useLyricInput";
 import { useCursorState, CursorState } from "@/composables/useCursorState";
 import { ExhaustiveError } from "@/type/utility";
@@ -667,7 +667,7 @@ const previewDrawPitch = () => {
   } else if (cursorFrame < prevCursorPos.frame) {
     for (let i = cursorFrame; i <= prevCursorPos.frame; i++) {
       tempPitchEdit.data[i - tempPitchEdit.startFrame] = Math.exp(
-        Interpolate.linear(
+        interpolateLinear(
           { x: cursorFrame, y: Math.log(cursorFrequency) },
           { x: prevCursorPos.frame, y: Math.log(prevCursorPos.frequency) },
           i,
@@ -677,7 +677,7 @@ const previewDrawPitch = () => {
   } else {
     for (let i = prevCursorPos.frame; i <= cursorFrame; i++) {
       tempPitchEdit.data[i - tempPitchEdit.startFrame] = Math.exp(
-        Interpolate.linear(
+        interpolateLinear(
           { x: prevCursorPos.frame, y: Math.log(prevCursorPos.frequency) },
           { x: cursorFrame, y: Math.log(cursorFrequency) },
           i,

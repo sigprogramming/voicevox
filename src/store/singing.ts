@@ -93,7 +93,7 @@ import {
   AnimationTimer,
   calculateHash,
   createPromiseThatResolvesWhen,
-  Interpolate,
+  interpolateLinear,
   round,
 } from "@/sing/utility";
 import { getWorkaroundKeyRangeAdjustment } from "@/sing/workaroundKeyRangeAdjustment";
@@ -378,10 +378,10 @@ const muteLastPauSection = (
     volume[lastPauStartFrame] *= 0.5;
   } else {
     for (let i = 0; i < fadeOutFrameLength; i++) {
-      volume[lastPauStartFrame + i] *= Interpolate.linear(
+      volume[lastPauStartFrame + i] *= interpolateLinear(
         { x: 0, y: 1 },
         { x: fadeOutFrameLength - 1, y: 0 },
-        i
+        i,
       );
     }
   }
