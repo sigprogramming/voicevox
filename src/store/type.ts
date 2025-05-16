@@ -766,7 +766,7 @@ export type PhraseState =
   | "WAITING_TO_BE_RENDERED"
   | "NOW_RENDERING"
   | "COULD_NOT_RENDER"
-  | "PLAYABLE";
+  | "RENDERED";
 
 /**
  * エディタ用のFrameAudioQuery
@@ -1040,6 +1040,20 @@ export type SingingStoreTypes = {
     action(payload: { trackId: TrackId }): void;
   };
 
+  GENERATE_AND_REGISTER_PHRASE_AUDIO_SEQUENCE: {
+    action(payload: {
+      startTime: number;
+      singingVoiceKey: SingingVoiceKey;
+      singingVoice: SingingVoice;
+      phraseKey: PhraseKey;
+      trackId: TrackId;
+    }): void;
+  };
+
+  SETUP_SONG_TRACK_RENDERER: {
+    action(): void;
+  };
+
   SET_PHRASES: {
     mutation: { phrases: Map<PhraseKey, Phrase> };
   };
@@ -1086,6 +1100,12 @@ export type SingingStoreTypes = {
     };
   };
 
+  SET_PHRASE_QUERIES: {
+    mutation: {
+      queries: Map<EditorFrameAudioQueryKey, EditorFrameAudioQuery>;
+    };
+  };
+
   SET_PHRASE_QUERY: {
     mutation: {
       queryKey: EditorFrameAudioQueryKey;
@@ -1097,6 +1117,12 @@ export type SingingStoreTypes = {
     mutation: { queryKey: EditorFrameAudioQueryKey };
   };
 
+  SET_PHRASE_SINGING_PITCHES: {
+    mutation: {
+      singingPitches: Map<SingingPitchKey, SingingPitch>;
+    };
+  };
+
   SET_PHRASE_SINGING_PITCH: {
     mutation: {
       singingPitchKey: SingingPitchKey;
@@ -1106,6 +1132,12 @@ export type SingingStoreTypes = {
 
   DELETE_PHRASE_SINGING_PITCH: {
     mutation: { singingPitchKey: SingingPitchKey };
+  };
+
+  SET_PHRASE_SINGING_VOLUMES: {
+    mutation: {
+      singingVolumes: Map<SingingVolumeKey, SingingVolume>;
+    };
   };
 
   SET_PHRASE_SINGING_VOLUME: {
