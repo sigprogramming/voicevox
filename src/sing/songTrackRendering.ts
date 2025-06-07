@@ -820,6 +820,7 @@ export type PhraseRenderingCompleteEvent = {
   readonly type: "phraseRenderingComplete";
   readonly phraseKey: PhraseKey;
   readonly phrase: PhraseForRender;
+  readonly snapshot: SnapshotForRender;
 };
 
 /**
@@ -1205,6 +1206,7 @@ export class SongTrackRenderer {
       type: "phraseRenderingComplete",
       phraseKey,
       phrase: SongTrackRenderer.clonePhrase(phrase),
+      snapshot,
     });
   }
 
