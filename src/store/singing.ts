@@ -112,13 +112,13 @@ import {
 } from "@/sing/utaformatixProject/utils";
 import { ExhaustiveError, UnreachableError } from "@/type/utility";
 import {
-  CacheLoadedEvent,
-  PhraseRenderingCompleteEvent,
   PhraseRenderingErrorEvent,
-  PhraseRenderingStartedEvent,
+  PhrasesGeneratedEvent,
   PitchGenerationCompleteEvent,
-  QueryGenerationCompleteEvent,
+  PitchGenerationStartedEvent,
   SongTrackRenderer,
+  TrackQueryGenerationCompleteEvent,
+  TrackQueryGenerationStartedEvent,
   VoiceSynthesisCompleteEvent,
   VolumeGenerationCompleteEvent,
 } from "@/sing/songTrackRendering";
@@ -1153,18 +1153,9 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
     async action({ state, actions, mutations }) {
       /**
        * `phrasesGenerated` イベントのハンドラ。
-       * フレーズが生成された直後に呼び出される。現状ログ出力のみ。
+       * フレーズが生成された後に呼び出される。
        */
-      const onPhrasesGenerated = () => {
-        logger.info("Phrases generated.");
-      };
-
-      /**
-       * `cacheLoaded` イベントのハンドラ。
-       * キャッシュデータが読み込まれた後に呼び出される。
-       * `store.state` を更新し、シーケンスの同期を行う。
-       */
-      const onCacheLoaded = (event: CacheLoadedEvent) => {
+      const onPhrasesGenerated = (event: PhrasesGeneratedEvent) => {
         const newPhrases = new Map<PhraseKey, Phrase>();
         const newPhraseQueries = new Map<
           EditorFrameAudioQueryKey,
@@ -1264,44 +1255,127 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           event.snapshot.tpqn,
         );
 
-        logger.info("Cache loaded and applied to phrases.");
+        logger.info("Phrases generated.");
       };
 
-      /**
-       * `phraseRenderingStarted` イベントのハンドラ。
-       * 特定のフレーズのレンダリングが開始されたときに呼び出される。
-       * フレーズの状態を 'NOW_RENDERING' に設定する。
-       */
-      const onPhraseRenderingStarted = (event: PhraseRenderingStartedEvent) => {
+      const onTrackQueryGenerationStarted = (
+        event: TrackQueryGenerationStartedEvent,
+      ) => {
+        for (const [phraseKey, phrase] of state.phrases) {
+          if (phrase.trackId === event.trackId) {
+            mutations.SET_STATE_TO_PHRASE({
+              phraseKey,
+              phraseState: "NOW_RENDERING",
+            });
+          }
+        }
+
+        logger.info("Track query generation started.");
+      };
+
+      const onTrackQueryGenerationComplete = (
+        event: TrackQueryGenerationCompleteEvent,
+      ) => {
+        for (const [phraseKey, phrase] of event.phrases) {
+          if (phrase.trackId !== event.trackId) {
+            continue;
+          }
+          const storePhrase = getOrThrow(state.phrases, phraseKey);
+
+          if (
+            storePhrase.queryKey == undefined &&
+            phrase.queryKey != undefined &&
+            phrase.query != undefined
+          ) {
+            mutations.SET_PHRASE_QUERY({
+              queryKey: phrase.queryKey,
+              query: phrase.query,
+            });
+            mutations.SET_QUERY_KEY_TO_PHRASE({
+              phraseKey,
+              queryKey: phrase.queryKey,
+            });
+          }
+
+          if (
+            storePhrase.singingPitchKey == undefined &&
+            phrase.singingPitchKey != undefined &&
+            phrase.singingPitch != undefined
+          ) {
+            mutations.SET_PHRASE_SINGING_PITCH({
+              singingPitchKey: phrase.singingPitchKey,
+              singingPitch: phrase.singingPitch,
+            });
+            mutations.SET_SINGING_PITCH_KEY_TO_PHRASE({
+              phraseKey,
+              singingPitchKey: phrase.singingPitchKey,
+            });
+          }
+
+          if (
+            storePhrase.singingVolumeKey == undefined &&
+            phrase.singingVolumeKey != undefined &&
+            phrase.singingVolume != undefined
+          ) {
+            mutations.SET_PHRASE_SINGING_VOLUME({
+              singingVolumeKey: phrase.singingVolumeKey,
+              singingVolume: phrase.singingVolume,
+            });
+            mutations.SET_SINGING_VOLUME_KEY_TO_PHRASE({
+              phraseKey,
+              singingVolumeKey: phrase.singingVolumeKey,
+            });
+          }
+
+          if (
+            storePhrase.singingVoiceKey == undefined &&
+            phrase.singingVoiceKey != undefined &&
+            phrase.singingVoice != undefined
+          ) {
+            phraseSingingVoices.set(
+              phrase.singingVoiceKey,
+              phrase.singingVoice,
+            );
+            mutations.SET_SINGING_VOICE_KEY_TO_PHRASE({
+              phraseKey,
+              singingVoiceKey: phrase.singingVoiceKey,
+            });
+          }
+
+          if (storePhrase.state !== "NOW_RENDERING") {
+            throw new Error("Phrase state is not NOW_RENDERING.");
+          }
+
+          if (phrase.singingVoice != undefined) {
+            mutations.SET_STATE_TO_PHRASE({
+              phraseKey,
+              phraseState: "RENDERED",
+            });
+          } else {
+            mutations.SET_STATE_TO_PHRASE({
+              phraseKey,
+              phraseState: "WAITING_TO_BE_RENDERED",
+            });
+          }
+        }
+
+        syncPhraseSequences(
+          state.phrases,
+          phraseSingingVoices,
+          event.snapshot.tempos,
+          event.snapshot.tpqn,
+        );
+
+        logger.info("Track query generation complete.");
+      };
+
+      const onPitchGenerationStarted = (event: PitchGenerationStartedEvent) => {
         mutations.SET_STATE_TO_PHRASE({
           phraseKey: event.phraseKey,
           phraseState: "NOW_RENDERING",
         });
 
-        logger.info("Phrase rendering started.");
-      };
-
-      /**
-       * `queryGenerationComplete` イベントのハンドラ。
-       * クエリの生成が完了したときに呼び出される。
-       * 生成されたクエリをフレーズと紐づけて `store.state` で保持する。
-       */
-      const onQueryGenerationComplete = (
-        event: QueryGenerationCompleteEvent,
-      ) => {
-        mutations.SET_PHRASE_QUERY({
-          queryKey: event.queryKey,
-          query: event.query,
-        });
-        mutations.SET_QUERY_KEY_TO_PHRASE({
-          phraseKey: event.phraseKey,
-          queryKey: event.queryKey,
-        });
-
-        const phonemes = event.query.phonemes
-          .map((value) => value.phoneme)
-          .join(" ");
-        logger.info(`Generated query. phonemes: ${phonemes}`);
+        logger.info("Pitch generation started.");
       };
 
       /**
@@ -1356,26 +1430,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           singingVoiceKey: event.singingVoiceKey,
         });
 
-        logger.info(`Synthesized singing voice.`);
-      };
-
-      /**
-       * `phraseRenderingComplete` イベントのハンドラ。
-       * 特定のフレーズの全レンダリング工程（クエリ、ピッチ、ボリューム、歌声）が完了したときに呼び出される。
-       * フレーズの状態を 'RENDERED' に設定し、シーケンスの同期を行う。
-       */
-      const onPhraseRenderingComplete = (
-        event: PhraseRenderingCompleteEvent,
-      ) => {
-        const singingVoice = event.phrase.singingVoice;
-        const singingVoiceKey = event.phrase.singingVoiceKey;
-        if (singingVoice == undefined) {
-          throw new Error("singingVoice is undefined.");
-        }
-        if (singingVoiceKey == undefined) {
-          throw new Error("singingVoiceKey is undefined.");
-        }
-
         mutations.SET_STATE_TO_PHRASE({
           phraseKey: event.phraseKey,
           phraseState: "RENDERED",
@@ -1389,7 +1443,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           event.snapshot.tpqn,
         );
 
-        logger.info("Phrase rendering complete.");
+        logger.info(`Synthesized singing voice.`);
       };
 
       /**
@@ -1436,16 +1490,16 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
       songTrackRenderer.addEventListener((event) => {
         switch (event.type) {
           case "phrasesGenerated":
-            onPhrasesGenerated();
+            onPhrasesGenerated(event);
             break;
-          case "cacheLoaded":
-            onCacheLoaded(event);
+          case "trackQueryGenerationStarted":
+            onTrackQueryGenerationStarted(event);
             break;
-          case "phraseRenderingStarted":
-            onPhraseRenderingStarted(event);
+          case "trackQueryGenerationComplete":
+            onTrackQueryGenerationComplete(event);
             break;
-          case "queryGenerationComplete":
-            onQueryGenerationComplete(event);
+          case "pitchGenerationStarted":
+            onPitchGenerationStarted(event);
             break;
           case "pitchGenerationComplete":
             onPitchGenerationComplete(event);
@@ -1455,9 +1509,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
             break;
           case "voiceSynthesisComplete":
             onVoiceSynthesisComplete(event);
-            break;
-          case "phraseRenderingComplete":
-            onPhraseRenderingComplete(event);
             break;
           case "phraseRenderingError":
             onPhraseRenderingError(event);
