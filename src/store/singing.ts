@@ -116,7 +116,7 @@ import {
   PitchGenerationFinishedEvent,
   PitchGenerationStartedEvent,
   SongTrackRenderer,
-  TrackCacheLoadFinishedEvent,
+  SongTrackRenderingEvent,
   TrackQueryGenerationFinishedEvent,
   TrackQueryGenerationStartedEvent,
   VoiceSynthesisFinishedEvent,
@@ -1153,15 +1153,7 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
    */
   CREATE_AND_SETUP_SONG_TRACK_RENDERER: {
     async action({ state, actions, mutations }) {
-      /**
-       * `phrasesGenerated` イベントのハンドラ。
-       * フレーズが生成された直後に呼び出される。現状ログ出力のみ。
-       */
-      const onPhrasesGenerated = () => {
-        logger.info("Phrases generated.");
-      };
-
-      const onCacheLoadFinished = (event: CacheLoadFinishedEvent) => {
+      const replacePhrases = (event: SongTrackRenderingEvent) => {
         const newPhrases = new Map<PhraseKey, Phrase>();
         const newPhraseQueries = new Map<
           EditorFrameAudioQueryKey,
@@ -1304,12 +1296,11 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
         logger.info("Track query generation finished.");
       };
 
-      const onTrackCacheLoadFinished = (event: TrackCacheLoadFinishedEvent) => {
+      const applyCache = (event: CacheLoadFinishedEvent) => {
         for (const [phraseKey, phrase] of event.context.phrases) {
-          if (
-            phrase.trackId !== event.trackId ||
-            phrase.errorOccurredDuringRendering
-          ) {
+          const isCacheLoadedPhrase =
+            event.cacheLoadedPhraseKeys.has(phraseKey);
+          if (!isCacheLoadedPhrase || phrase.errorOccurredDuringRendering) {
             continue;
           }
           const storePhrase = getOrThrow(state.phrases, phraseKey);
@@ -1550,24 +1541,38 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
         playheadPositionGetter: () => playheadPosition.value,
       });
 
-      // イベントリスナーを登録
-      // 各イベントタイプに応じて、上で定義したハンドラ関数を呼び出す
+      let phrasesReplaced = false;
+
       songTrackRenderer.addEventListener((event) => {
+        if (event.type === "renderingStarted") {
+          phrasesReplaced = false;
+        }
+        if (
+          event.type === "trackQueryGenerationStarted" ||
+          event.type === "pitchGenerationStarted" ||
+          event.type === "volumeGenerationStarted" ||
+          event.type === "voiceSynthesisStarted" ||
+          event.type === "renderingCompleted"
+        ) {
+          if (!phrasesReplaced) {
+            replacePhrases(event);
+            phrasesReplaced = true;
+          }
+        }
+        if (event.type === "cacheLoadFinished") {
+          if (phrasesReplaced) {
+            applyCache(event);
+          } else {
+            replacePhrases(event);
+          }
+        }
+
         switch (event.type) {
-          case "phrasesGenerated":
-            onPhrasesGenerated();
-            break;
-          case "cacheLoadFinished":
-            onCacheLoadFinished(event);
-            break;
           case "trackQueryGenerationStarted":
             onTrackQueryGenerationStarted(event);
             break;
           case "trackQueryGenerationFinished":
             onTrackQueryGenerationFinished(event);
-            break;
-          case "trackCacheLoadFinished":
-            onTrackCacheLoadFinished(event);
             break;
           case "pitchGenerationStarted":
             onPitchGenerationStarted(event);
@@ -1587,8 +1592,6 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
           case "voiceSynthesisFinished":
             onVoiceSynthesisFinished(event);
             break;
-          default:
-            throw new ExhaustiveError(event);
         }
       });
     },

@@ -1,4 +1,8 @@
-import { UnreachableError } from "@/type/utility";
+import { createLogger } from "@/helpers/log";
+import { getOrThrow } from "@/helpers/mapHelper";
+import { ExhaustiveError, UnreachableError } from "@/type/utility";
+
+const logger = createLogger("sing/utility");
 
 export type Rect = {
   x: number;
@@ -149,6 +153,14 @@ export const filterMap = <K, V>(
   return new Map([...map.entries()].filter(predicate));
 };
 
+export function popAny<T>(set: Set<T>) {
+  for (const element of set) {
+    set.delete(element);
+    return element;
+  }
+  return undefined;
+}
+
 export function linearInterpolation(
   x1: number,
   y1: number,
@@ -194,6 +206,87 @@ export function applyGaussianFilter(data: number[], sigma: number) {
     }
     data[i] = sum;
   }
+}
+
+type DAG<DagNode> = Readonly<{
+  nodes: readonly DagNode[];
+  successorsMap: ReadonlyMap<DagNode, readonly DagNode[]>;
+}>;
+
+export async function detectCycle<DagNode>(dag: DAG<DagNode>) {
+  const chunkSize = 1000;
+  let processedInChunk = 0;
+
+  const visitStateMap = new Map<
+    DagNode,
+    "UNVISITED" | "VISITING" | "VISITED"
+  >();
+  for (const node of dag.nodes) {
+    visitStateMap.set(node, "UNVISITED");
+  }
+
+  const nodeSet = new Set(dag.nodes);
+
+  for (const startNode of dag.nodes) {
+    const startState = getOrThrow(visitStateMap, startNode);
+    if (startState !== "UNVISITED") {
+      continue;
+    }
+
+    const explorationStack: DagNode[] = [];
+    const nextSuccessorIndexMap = new Map<DagNode, number>();
+
+    explorationStack.push(startNode);
+    nextSuccessorIndexMap.set(startNode, 0);
+    visitStateMap.set(startNode, "VISITING");
+
+    while (explorationStack.length > 0) {
+      if (processedInChunk >= chunkSize) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        processedInChunk = 0;
+      }
+      processedInChunk++;
+
+      const currentNode = getLast(explorationStack);
+      const successorsForCurrent = dag.successorsMap.get(currentNode) ?? [];
+      const nextSuccessorIndex = getOrThrow(nextSuccessorIndexMap, currentNode);
+
+      if (nextSuccessorIndex >= successorsForCurrent.length) {
+        explorationStack.pop();
+        nextSuccessorIndexMap.delete(currentNode);
+        visitStateMap.set(currentNode, "VISITED");
+        continue;
+      }
+
+      const successorNode = successorsForCurrent[nextSuccessorIndex];
+      nextSuccessorIndexMap.set(currentNode, nextSuccessorIndex + 1);
+
+      if (!nodeSet.has(successorNode)) {
+        throw new Error("Successor node is not included in the nodes list.");
+      }
+
+      const successorState = getOrThrow(visitStateMap, successorNode);
+
+      switch (successorState) {
+        case "UNVISITED":
+          explorationStack.push(successorNode);
+          nextSuccessorIndexMap.set(successorNode, 0);
+          visitStateMap.set(successorNode, "VISITING");
+          continue;
+
+        case "VISITING":
+          return true;
+
+        case "VISITED":
+          continue;
+
+        default:
+          throw new ExhaustiveError(successorState);
+      }
+    }
+  }
+
+  return false;
 }
 
 export async function calculateHash<T>(obj: T) {

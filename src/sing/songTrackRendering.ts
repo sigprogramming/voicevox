@@ -1,4 +1,13 @@
 import {
+  CacheableTask,
+  NonCacheableTask,
+  SkipCondition,
+  Task,
+  TaskGraph,
+  TaskGraphRunner,
+  TaskResultInfo,
+} from "./taskGraphRunner";
+import {
   EditorFrameAudioQuery,
   EditorFrameAudioQueryKey,
   PhraseKey,
@@ -11,7 +20,6 @@ import {
 } from "@/store/type";
 import {
   calculateHash,
-  filterMap,
   getLast,
   getPrev,
   linearInterpolation,
@@ -23,13 +31,13 @@ import {
   decibelToLinear,
   getNoteDuration,
   secondToTick,
-  selectPriorPhrase,
   tickToSecond,
 } from "@/sing/domain";
 import { FramePhoneme, Note as NoteForRequestToEngine } from "@/openapi";
 import { EngineId, NoteId, StyleId, TrackId } from "@/type/preload";
 import { getOrThrow } from "@/helpers/mapHelper";
 import type { Note, Singer, Tempo, Track } from "@/domain/project/type";
+import { ExhaustiveError, UnreachableError } from "@/type/utility";
 
 /**
  * レンダリングに必要なデータのスナップショット
@@ -164,6 +172,11 @@ type SongTrackRenderingConfig = Readonly<{
 type SongTrackRenderingContext = Readonly<{
   snapshot: SnapshotForRender;
   phrases: Map<PhraseKey, PhraseForRender>;
+}>;
+
+type ReadonlySongTrackRenderingContext = Readonly<{
+  snapshot: SnapshotForRender;
+  phrases: ReadonlyMap<PhraseKey, PhraseForRender>;
 }>;
 
 /**
@@ -462,19 +475,17 @@ const createPhrasesFromNotes = async (
 };
 
 /**
- * 各トラックのノーツからフレーズを生成する。
+ * 各トラックのノーツからフレーズを生成してセットする。
  * 重なっているノートはフレーズには含まれない。
  */
-const generatePhrases = async (
-  snapshot: SnapshotForRender,
+const generateAndSetPhrases = async (
+  context: SongTrackRenderingContext,
   config: SongTrackRenderingConfig,
 ) => {
-  const phrases = new Map<PhraseKey, PhraseForRender>();
-
-  for (const [trackId, track] of snapshot.tracks) {
+  for (const [trackId, track] of context.snapshot.tracks) {
     // 重なっているノートを除く
     const overlappingNoteIds = getOrThrow(
-      snapshot.trackOverlappingNoteIds,
+      context.snapshot.trackOverlappingNoteIds,
       trackId,
     );
     const trackNotes = track.notes.filter(
@@ -488,17 +499,15 @@ const generatePhrases = async (
     const trackPhrases = await createPhrasesFromNotes(
       phraseNotesList,
       trackId,
-      snapshot,
+      context.snapshot,
       config.firstRestMinDurationSeconds,
     );
 
     // 結果をマージ
     for (const [key, phrase] of trackPhrases) {
-      phrases.set(key, phrase);
+      context.phrases.set(key, phrase);
     }
   }
-
-  return phrases;
 };
 
 const generateQuerySource = (
@@ -743,6 +752,302 @@ const synthesizeSingingVoice = async (
   return singingVoice;
 };
 
+class FrameAudioQueryGenerationTask
+  implements CacheableTask<SongTrackRenderingContext>
+{
+  readonly type = "frameAudioQueryGeneration";
+  readonly skipCondition: SkipCondition = "AnyDependencyFailedOrSkipped";
+  readonly isCacheable = true;
+
+  readonly dependencies: Task<SongTrackRenderingContext>[];
+  readonly targetPhraseKey: PhraseKey;
+
+  private readonly config: SongTrackRenderingConfig;
+  private readonly engineSongApi: EngineSongApi;
+  private readonly queryCache: Map<
+    EditorFrameAudioQueryKey,
+    EditorFrameAudioQuery
+  >;
+
+  constructor(
+    dependencies: Task<SongTrackRenderingContext>[],
+    targetPhraseKey: PhraseKey,
+    config: SongTrackRenderingConfig,
+    engineSongApi: EngineSongApi,
+    queryCache: Map<EditorFrameAudioQueryKey, EditorFrameAudioQuery>,
+  ) {
+    this.dependencies = dependencies;
+    this.targetPhraseKey = targetPhraseKey;
+    this.config = config;
+    this.engineSongApi = engineSongApi;
+    this.queryCache = queryCache;
+  }
+
+  async isCached(context: SongTrackRenderingContext) {
+    const targetPhrase = getOrThrow(context.phrases, this.targetPhraseKey);
+    const querySource = generateQuerySource(targetPhrase, context.snapshot);
+    const queryKey = await calculateQueryKey(querySource);
+    return this.queryCache.has(queryKey);
+  }
+
+  async run(context: SongTrackRenderingContext) {
+    const targetPhrase = getOrThrow(context.phrases, this.targetPhraseKey);
+    const querySource = generateQuerySource(targetPhrase, context.snapshot);
+    const queryKey = await calculateQueryKey(querySource);
+
+    let query = this.queryCache.get(queryKey);
+    if (query == undefined) {
+      query = await generateQuery(querySource, this.config, this.engineSongApi);
+      this.queryCache.set(queryKey, query);
+    }
+    targetPhrase.queryKey = queryKey;
+    targetPhrase.query = query;
+  }
+}
+
+class EditingAndAdjustingPhonemeTimingTask
+  implements NonCacheableTask<SongTrackRenderingContext>
+{
+  readonly type = "editingAndAdjustingPhonemeTiming";
+  readonly skipCondition: SkipCondition = "AllDependenciesFailedOrSkipped";
+  readonly isCacheable = false;
+
+  readonly dependencies: Task<SongTrackRenderingContext>[];
+  readonly targetTrackId: TrackId;
+
+  constructor(
+    dependencies: Task<SongTrackRenderingContext>[],
+    targetTrackId: TrackId,
+  ) {
+    this.dependencies = dependencies;
+    this.targetTrackId = targetTrackId;
+  }
+
+  async run(context: SongTrackRenderingContext) {
+    const targetTrack = getOrThrow(context.snapshot.tracks, this.targetTrackId);
+    const targetPhraseEntries = [...context.phrases.entries()].filter(
+      (entry) => {
+        const phrase = entry[1];
+        return (
+          phrase.trackId === this.targetTrackId && phrase.query != undefined
+        );
+      },
+    );
+    const targetPhraseKeyArray = targetPhraseEntries.map((entry) => entry[0]);
+    const targetPhraseArray = targetPhraseEntries.map((entry) => entry[1]);
+    const targetPhraseStartTimes = targetPhraseArray.map(
+      (phrase) => phrase.startTime,
+    );
+    const loadedQueryArray = targetPhraseArray
+      .map((phrase) => phrase.query)
+      .filter((query) => query != undefined);
+
+    const clonedQueryArray = structuredClone(loadedQueryArray);
+
+    // TODO: この関数のインターフェースがいまいちなので、リファクタリングする
+    applyPhonemeTimingEditAndAdjust(
+      targetPhraseStartTimes,
+      clonedQueryArray,
+      targetTrack.phonemeTimingEditData,
+      context.snapshot.editorFrameRate,
+    );
+
+    const queryEntries = clonedQueryArray.map(
+      (value, index) => [targetPhraseKeyArray[index], value] as const,
+    );
+    const queryMap = new Map(queryEntries);
+
+    for (const [phraseKey, phrase] of targetPhraseEntries) {
+      phrase.phonemeTimingEditingAppliedQuery = getOrThrow(queryMap, phraseKey);
+    }
+  }
+}
+
+class SingingPitchGenerationTask
+  implements CacheableTask<SongTrackRenderingContext>
+{
+  readonly type = "singingPitchGeneration";
+  readonly skipCondition: SkipCondition = "AnyDependencyFailedOrSkipped";
+  readonly isCacheable = true;
+
+  readonly dependencies: Task<SongTrackRenderingContext>[];
+  readonly targetPhraseKey: PhraseKey;
+
+  private readonly config: SongTrackRenderingConfig;
+  private readonly engineSongApi: EngineSongApi;
+  private readonly singingPitchCache: Map<SingingPitchKey, SingingPitch>;
+
+  constructor(
+    dependencies: Task<SongTrackRenderingContext>[],
+    targetPhraseKey: PhraseKey,
+    config: SongTrackRenderingConfig,
+    engineSongApi: EngineSongApi,
+    queryCache: Map<SingingPitchKey, SingingPitch>,
+  ) {
+    this.dependencies = dependencies;
+    this.targetPhraseKey = targetPhraseKey;
+    this.config = config;
+    this.engineSongApi = engineSongApi;
+    this.singingPitchCache = queryCache;
+  }
+
+  async isCached(context: SongTrackRenderingContext) {
+    const targetPhrase = getOrThrow(context.phrases, this.targetPhraseKey);
+    const singingPitchSource = generateSingingPitchSource(
+      targetPhrase,
+      context.snapshot,
+    );
+    const singingPitchKey = await calculateSingingPitchKey(singingPitchSource);
+    return this.singingPitchCache.has(singingPitchKey);
+  }
+
+  async run(context: SongTrackRenderingContext) {
+    const targetPhrase = getOrThrow(context.phrases, this.targetPhraseKey);
+    const singingPitchSource = generateSingingPitchSource(
+      targetPhrase,
+      context.snapshot,
+    );
+    const singingPitchKey = await calculateSingingPitchKey(singingPitchSource);
+
+    let singingPitch = this.singingPitchCache.get(singingPitchKey);
+    if (singingPitch == undefined) {
+      singingPitch = await generateSingingPitch(
+        singingPitchSource,
+        this.config,
+        this.engineSongApi,
+      );
+      this.singingPitchCache.set(singingPitchKey, singingPitch);
+    }
+    targetPhrase.singingPitchKey = singingPitchKey;
+    targetPhrase.singingPitch = singingPitch;
+  }
+}
+
+class SingingVolumeGenerationTask
+  implements CacheableTask<SongTrackRenderingContext>
+{
+  readonly type = "singingVolumeGeneration";
+  readonly skipCondition: SkipCondition = "AnyDependencyFailedOrSkipped";
+  readonly isCacheable = true;
+
+  readonly dependencies: Task<SongTrackRenderingContext>[];
+  readonly targetPhraseKey: PhraseKey;
+
+  private readonly config: SongTrackRenderingConfig;
+  private readonly engineSongApi: EngineSongApi;
+  private readonly singingVolumeCache: Map<SingingVolumeKey, SingingVolume>;
+
+  constructor(
+    dependencies: Task<SongTrackRenderingContext>[],
+    targetPhraseKey: PhraseKey,
+    config: SongTrackRenderingConfig,
+    engineSongApi: EngineSongApi,
+    queryCache: Map<SingingVolumeKey, SingingVolume>,
+  ) {
+    this.dependencies = dependencies;
+    this.targetPhraseKey = targetPhraseKey;
+    this.config = config;
+    this.engineSongApi = engineSongApi;
+    this.singingVolumeCache = queryCache;
+  }
+
+  async isCached(context: SongTrackRenderingContext) {
+    const targetPhrase = getOrThrow(context.phrases, this.targetPhraseKey);
+    const singingVolumeSource = generateSingingVolumeSource(
+      targetPhrase,
+      context.snapshot,
+    );
+    const singingVolumeKey =
+      await calculateSingingVolumeKey(singingVolumeSource);
+    return this.singingVolumeCache.has(singingVolumeKey);
+  }
+
+  async run(context: SongTrackRenderingContext) {
+    const targetPhrase = getOrThrow(context.phrases, this.targetPhraseKey);
+    const singingVolumeSource = generateSingingVolumeSource(
+      targetPhrase,
+      context.snapshot,
+    );
+    const singingVolumeKey =
+      await calculateSingingVolumeKey(singingVolumeSource);
+
+    let singingVolume = this.singingVolumeCache.get(singingVolumeKey);
+    if (singingVolume == undefined) {
+      singingVolume = await generateSingingVolume(
+        singingVolumeSource,
+        this.config,
+        this.engineSongApi,
+      );
+      this.singingVolumeCache.set(singingVolumeKey, singingVolume);
+    }
+    targetPhrase.singingVolumeKey = singingVolumeKey;
+    targetPhrase.singingVolume = singingVolume;
+  }
+}
+
+class SingingVoiceSynthesisTask
+  implements CacheableTask<SongTrackRenderingContext>
+{
+  readonly type = "singingVoiceSynthesis";
+  readonly skipCondition: SkipCondition = "AnyDependencyFailedOrSkipped";
+  readonly isCacheable = true;
+
+  readonly dependencies: Task<SongTrackRenderingContext>[];
+  readonly targetPhraseKey: PhraseKey;
+
+  private readonly engineSongApi: EngineSongApi;
+  private readonly singingVoiceCache: Map<SingingVoiceKey, SingingVoice>;
+
+  constructor(
+    dependencies: Task<SongTrackRenderingContext>[],
+    targetPhraseKey: PhraseKey,
+    engineSongApi: EngineSongApi,
+    queryCache: Map<SingingVoiceKey, SingingVoice>,
+  ) {
+    this.dependencies = dependencies;
+    this.targetPhraseKey = targetPhraseKey;
+    this.engineSongApi = engineSongApi;
+    this.singingVoiceCache = queryCache;
+  }
+
+  async isCached(context: SongTrackRenderingContext) {
+    const targetPhrase = getOrThrow(context.phrases, this.targetPhraseKey);
+    const singingVoiceSource = generateSingingVoiceSource(
+      targetPhrase,
+      context.snapshot,
+    );
+    const singingVoiceKey = await calculateSingingVoiceKey(singingVoiceSource);
+    return this.singingVoiceCache.has(singingVoiceKey);
+  }
+
+  async run(context: SongTrackRenderingContext) {
+    const targetPhrase = getOrThrow(context.phrases, this.targetPhraseKey);
+    const singingVoiceSource = generateSingingVoiceSource(
+      targetPhrase,
+      context.snapshot,
+    );
+    const singingVoiceKey = await calculateSingingVoiceKey(singingVoiceSource);
+
+    let singingVoice = this.singingVoiceCache.get(singingVoiceKey);
+    if (singingVoice == undefined) {
+      singingVoice = await synthesizeSingingVoice(
+        singingVoiceSource,
+        this.engineSongApi,
+      );
+      this.singingVoiceCache.set(singingVoiceKey, singingVoice);
+    }
+    targetPhrase.singingVoiceKey = singingVoiceKey;
+    targetPhrase.singingVoice = singingVoice;
+  }
+}
+
+type SongTrackRenderingTask =
+  | FrameAudioQueryGenerationTask
+  | EditingAndAdjustingPhonemeTimingTask
+  | SingingPitchGenerationTask
+  | SingingVolumeGenerationTask
+  | SingingVoiceSynthesisTask;
+
 /**
  * クエリの生成結果。
  */
@@ -812,11 +1117,11 @@ export type SongTrackRenderingResult =
     };
 
 /**
- * フレーズが生成されたときに発行されるイベント。
+ * レンダリングを開始したときに発行されるイベント。
  */
-export type PhrasesGeneratedEvent = {
-  readonly type: "phrasesGenerated";
-  readonly context: SongTrackRenderingContext;
+export type RenderingStartedEvent = {
+  readonly type: "renderingStarted";
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 /**
@@ -825,7 +1130,8 @@ export type PhrasesGeneratedEvent = {
  */
 export type CacheLoadFinishedEvent = {
   readonly type: "cacheLoadFinished";
-  readonly context: SongTrackRenderingContext;
+  readonly cacheLoadedPhraseKeys: ReadonlySet<PhraseKey>;
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 /**
@@ -834,7 +1140,7 @@ export type CacheLoadFinishedEvent = {
 export type TrackQueryGenerationStartedEvent = {
   readonly type: "trackQueryGenerationStarted";
   readonly trackId: TrackId;
-  readonly context: SongTrackRenderingContext;
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 /**
@@ -844,17 +1150,7 @@ export type TrackQueryGenerationFinishedEvent = {
   readonly type: "trackQueryGenerationFinished";
   readonly trackId: TrackId;
   readonly results: Map<PhraseKey, QueryGenerationResult>;
-  readonly context: SongTrackRenderingContext;
-};
-
-/**
- * トラックのキャッシュの読み込み処理が終了したときに発行されるイベント。
- * （トラックのクエリの生成が行われた後のキャッシュ読み込み処理）
- */
-export type TrackCacheLoadFinishedEvent = {
-  readonly type: "trackCacheLoadFinished";
-  readonly trackId: TrackId;
-  readonly context: SongTrackRenderingContext;
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 /**
@@ -863,7 +1159,7 @@ export type TrackCacheLoadFinishedEvent = {
 export type PitchGenerationStartedEvent = {
   readonly type: "pitchGenerationStarted";
   readonly phraseKey: PhraseKey;
-  readonly context: SongTrackRenderingContext;
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 /**
@@ -873,7 +1169,7 @@ export type PitchGenerationFinishedEvent = {
   readonly type: "pitchGenerationFinished";
   readonly phraseKey: PhraseKey;
   readonly result: PitchGenerationResult;
-  readonly context: SongTrackRenderingContext;
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 /**
@@ -882,7 +1178,7 @@ export type PitchGenerationFinishedEvent = {
 export type VolumeGenerationStartedEvent = {
   readonly type: "volumeGenerationStarted";
   readonly phraseKey: PhraseKey;
-  readonly context: SongTrackRenderingContext;
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 /**
@@ -892,7 +1188,7 @@ export type VolumeGenerationFinishedEvent = {
   readonly type: "volumeGenerationFinished";
   readonly phraseKey: PhraseKey;
   readonly result: VolumeGenerationResult;
-  readonly context: SongTrackRenderingContext;
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 /**
@@ -901,7 +1197,7 @@ export type VolumeGenerationFinishedEvent = {
 export type VoiceSynthesisStartedEvent = {
   readonly type: "voiceSynthesisStarted";
   readonly phraseKey: PhraseKey;
-  readonly context: SongTrackRenderingContext;
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 /**
@@ -911,21 +1207,29 @@ export type VoiceSynthesisFinishedEvent = {
   readonly type: "voiceSynthesisFinished";
   readonly phraseKey: PhraseKey;
   readonly result: VoiceSynthesisResult;
-  readonly context: SongTrackRenderingContext;
+  readonly context: ReadonlySongTrackRenderingContext;
+};
+
+/**
+ * レンダリングが終了したときに発行されるイベント。
+ */
+export type RenderingCompletedEvent = {
+  readonly type: "renderingCompleted";
+  readonly context: ReadonlySongTrackRenderingContext;
 };
 
 export type SongTrackRenderingEvent =
-  | PhrasesGeneratedEvent
+  | RenderingStartedEvent
   | CacheLoadFinishedEvent
   | TrackQueryGenerationStartedEvent
   | TrackQueryGenerationFinishedEvent
-  | TrackCacheLoadFinishedEvent
   | PitchGenerationStartedEvent
   | PitchGenerationFinishedEvent
   | VolumeGenerationStartedEvent
   | VolumeGenerationFinishedEvent
   | VoiceSynthesisStartedEvent
-  | VoiceSynthesisFinishedEvent;
+  | VoiceSynthesisFinishedEvent
+  | RenderingCompletedEvent;
 
 /**
  * ソングトラックのレンダリング処理を担当するクラス。
@@ -993,343 +1297,435 @@ export class SongTrackRenderer {
     }
     this._isRendering = true;
 
+    const context: SongTrackRenderingContext = {
+      snapshot,
+      phrases: new Map(),
+    };
+
+    this.dispatchEvent({ type: "renderingStarted", context });
+
     try {
-      // スナップショットからフレーズを生成
-      const phrases = await generatePhrases(snapshot, this.config);
+      await generateAndSetPhrases(context, this.config);
 
-      this.dispatchEvent({
-        type: "phrasesGenerated",
-        context: { phrases, snapshot },
-      });
+      const taskGraphRunner = this.createAndSetupTaskGraphRunner(context);
 
-      // レンダリング可能なフレーズを抽出
-      const renderablePhrases = filterMap(phrases, ([, phrase]) => {
-        // フレーズが属するトラックにシンガーが割り当てられていれば、レンダリング可能とする
-        const track = getOrThrow(snapshot.tracks, phrase.trackId);
-        return track.singer != undefined;
-      });
-
-      // キャッシュの読み込みを行う（クエリ生成前のキャッシュ読み込み処理）
-      // クエリの生成が必要なトラックは、歌唱ピッチ以降のキャッシュの読み込みは行われない
-      for (const [trackId, track] of snapshot.tracks) {
-        const targetPhrases = filterMap(
-          renderablePhrases,
-          ([, phrase]) => phrase.trackId === trackId,
-        );
-        if (targetPhrases.size === 0) {
-          continue;
-        }
-
-        // クエリのキャッシュを読み込む
-        for (const phrase of targetPhrases.values()) {
-          if (phrase.query == undefined) {
-            const queryAndKey = await this.tryLoadQueryAndKeyFromCache(
-              phrase,
-              snapshot,
-            );
-            if (queryAndKey != undefined) {
-              phrase.queryKey = queryAndKey.key;
-              phrase.query = queryAndKey.query;
-            }
-          }
-        }
-
-        // すべてのフレーズのクエリのキャッシュが読み込まれた場合は処理を続行し、
-        // 読み込まれなかった場合は、次のトラックの処理に移る
-        const areAllQueriesLoaded = [...targetPhrases.values()].every(
-          (phrase) => phrase.query != undefined,
-        );
-        if (!areAllQueriesLoaded) {
-          continue;
-        }
-
-        // 音素タイミング編集の適用と調整を行う
-        this.applyPhonemeTimingEditAndAdjust(track, targetPhrases, snapshot);
-
-        // 歌唱ピッチ、歌唱ボリューム、歌声のキャッシュを読み込む
-        for (const phrase of targetPhrases.values()) {
-          const singingPitchAndKey =
-            await this.tryLoadSingingPitchAndKeyFromCache(phrase, snapshot);
-          if (singingPitchAndKey != undefined) {
-            phrase.singingPitchKey = singingPitchAndKey.key;
-            phrase.singingPitch = singingPitchAndKey.singingPitch;
-          } else {
-            continue;
-          }
-
-          const singingVolumeAndKey =
-            await this.tryLoadSingingVolumeAndKeyFromCache(phrase, snapshot);
-          if (singingVolumeAndKey != undefined) {
-            phrase.singingVolumeKey = singingVolumeAndKey.key;
-            phrase.singingVolume = singingVolumeAndKey.singingVolume;
-          } else {
-            continue;
-          }
-
-          const singingVoiceAndKey =
-            await this.tryLoadSingingVoiceAndKeyFromCache(phrase, snapshot);
-          if (singingVoiceAndKey != undefined) {
-            phrase.singingVoiceKey = singingVoiceAndKey.key;
-            phrase.singingVoice = singingVoiceAndKey.singingVoice;
-          }
-        }
-      }
-
-      this.dispatchEvent({
-        type: "cacheLoadFinished",
-        context: { phrases, snapshot },
-      });
-
-      // トラックのクエリの生成を行い、歌唱ピッチ以降のキャッシュの読み込みを行う
-      // （クエリ生成後のキャッシュ読み込み処理）
-      for (const [trackId, track] of snapshot.tracks) {
-        const targetPhrases = filterMap(
-          renderablePhrases,
-          ([, phrase]) => phrase.trackId === trackId,
-        );
-        if (targetPhrases.size === 0) {
-          continue;
-        }
-
-        // クエリがすべて読み込まれている場合は、次のトラックの処理に移る
-        const allQueriesAreLoaded = [...targetPhrases.values()].every(
-          (phrase) => phrase.query != undefined,
-        );
-        if (allQueriesAreLoaded) {
-          continue;
-        }
-
-        // トラックのクエリの生成を行う
-        this.dispatchEvent({
-          type: "trackQueryGenerationStarted",
-          trackId,
-          context: { phrases, snapshot },
-        });
-
-        const queryGenerationResults = new Map<
-          PhraseKey,
-          QueryGenerationResult
-        >();
-        for (const [phraseKey, phrase] of targetPhrases) {
-          if (phrase.query != undefined) {
-            continue;
-          }
-          try {
-            const { queryKey, query } = await this.generateQueryWithKey(
-              phrase,
-              snapshot,
-            );
-            phrase.queryKey = queryKey;
-            phrase.query = query;
-            this.queryCache.set(queryKey, query);
-
-            queryGenerationResults.set(phraseKey, {
-              type: "success",
-              queryKey,
-              query,
-            });
-          } catch (error) {
-            phrase.errorOccurredDuringRendering = true;
-            renderablePhrases.delete(phraseKey);
-            targetPhrases.delete(phraseKey);
-
-            queryGenerationResults.set(phraseKey, { type: "error", error });
-            continue;
-          }
-        }
-
-        this.dispatchEvent({
-          type: "trackQueryGenerationFinished",
-          trackId,
-          results: queryGenerationResults,
-          context: { phrases, snapshot },
-        });
-
-        // クエリの生成に失敗して処理対象のフレーズが0個になった場合は、次のトラックの処理に移る
-        if (targetPhrases.size === 0) {
-          continue;
-        }
-
-        // 音素タイミング編集の適用と調整を行う
-        this.applyPhonemeTimingEditAndAdjust(track, targetPhrases, snapshot);
-
-        // 歌唱ピッチ、歌唱ボリューム、歌声のキャッシュを読み込む
-        for (const phrase of targetPhrases.values()) {
-          const singingPitchAndKey =
-            await this.tryLoadSingingPitchAndKeyFromCache(phrase, snapshot);
-          if (singingPitchAndKey != undefined) {
-            phrase.singingPitchKey = singingPitchAndKey.key;
-            phrase.singingPitch = singingPitchAndKey.singingPitch;
-          } else {
-            continue;
-          }
-
-          const singingVolumeAndKey =
-            await this.tryLoadSingingVolumeAndKeyFromCache(phrase, snapshot);
-          if (singingVolumeAndKey != undefined) {
-            phrase.singingVolumeKey = singingVolumeAndKey.key;
-            phrase.singingVolume = singingVolumeAndKey.singingVolume;
-          } else {
-            continue;
-          }
-
-          const singingVoiceAndKey =
-            await this.tryLoadSingingVoiceAndKeyFromCache(phrase, snapshot);
-          if (singingVoiceAndKey != undefined) {
-            phrase.singingVoiceKey = singingVoiceAndKey.key;
-            phrase.singingVoice = singingVoiceAndKey.singingVoice;
-          }
-        }
-
-        this.dispatchEvent({
-          type: "trackCacheLoadFinished",
-          trackId,
-          context: { phrases, snapshot },
-        });
-      }
-
-      // 歌声の合成が必要なフレーズを抽出
-      const phrasesToSynthesize = filterMap(
-        renderablePhrases,
-        ([, phrase]) => phrase.singingVoice == undefined,
-      );
-
-      // 歌声の合成が必要なフレーズがなくなるか、中断要求があるまでループ
-      while (phrasesToSynthesize.size > 0 && !this.interruptionRequested) {
-        // 再生ヘッド位置に近いフレーズから優先的に処理
-        const phraseKey = selectPriorPhrase(
-          phrasesToSynthesize,
-          this.playheadPositionGetter(),
-        );
-        const phrase = getOrThrow(phrasesToSynthesize, phraseKey);
-        phrasesToSynthesize.delete(phraseKey);
-
-        // 歌唱ピッチが無い場合は生成する
-        if (phrase.singingPitch == undefined) {
-          this.dispatchEvent({
-            type: "pitchGenerationStarted",
-            phraseKey,
-            context: { phrases, snapshot },
-          });
-
-          let pitchGenerationResult: PitchGenerationResult | undefined =
-            undefined;
-          try {
-            const { singingPitchKey, singingPitch } =
-              await this.generateSingingPitchWithKey(phrase, snapshot);
-            phrase.singingPitchKey = singingPitchKey;
-            phrase.singingPitch = singingPitch;
-            this.singingPitchCache.set(singingPitchKey, singingPitch);
-
-            pitchGenerationResult = {
-              type: "success",
-              singingPitchKey,
-              singingPitch,
-            };
-          } catch (error) {
-            phrase.errorOccurredDuringRendering = true;
-
-            pitchGenerationResult = { type: "error", error };
-          }
-
-          this.dispatchEvent({
-            type: "pitchGenerationFinished",
-            phraseKey,
-            result: pitchGenerationResult,
-            context: { phrases, snapshot },
-          });
-
-          // 歌唱ピッチの生成でエラーが発生した場合は、次のトラックの処理に移る
-          if (pitchGenerationResult.type === "error") {
-            continue;
-          }
-        }
-
-        // 歌唱ボリュームが無い場合は生成する
-        if (phrase.singingVolume == undefined) {
-          this.dispatchEvent({
-            type: "volumeGenerationStarted",
-            phraseKey,
-            context: { phrases, snapshot },
-          });
-
-          let volumeGenerationResult: VolumeGenerationResult | undefined =
-            undefined;
-          try {
-            const { singingVolumeKey, singingVolume } =
-              await this.generateSingingVolumeWithKey(phrase, snapshot);
-            phrase.singingVolumeKey = singingVolumeKey;
-            phrase.singingVolume = singingVolume;
-            this.singingVolumeCache.set(singingVolumeKey, singingVolume);
-
-            volumeGenerationResult = {
-              type: "success",
-              singingVolumeKey,
-              singingVolume,
-            };
-          } catch (error) {
-            phrase.errorOccurredDuringRendering = true;
-
-            volumeGenerationResult = { type: "error", error };
-          }
-
-          this.dispatchEvent({
-            type: "volumeGenerationFinished",
-            phraseKey,
-            result: volumeGenerationResult,
-            context: { phrases, snapshot },
-          });
-
-          // 歌唱ボリュームの生成でエラーが発生した場合は、次のトラックの処理に移る
-          if (volumeGenerationResult.type === "error") {
-            continue;
-          }
-        }
-
-        // 歌声を合成する
-        this.dispatchEvent({
-          type: "voiceSynthesisStarted",
-          phraseKey,
-          context: { phrases, snapshot },
-        });
-
-        let voiceSynthesisResult: VoiceSynthesisResult | undefined = undefined;
-        try {
-          const { singingVoiceKey, singingVoice } =
-            await this.synthesizeSingingVoiceWithKey(phrase, snapshot);
-          phrase.singingVoiceKey = singingVoiceKey;
-          phrase.singingVoice = singingVoice;
-          this.singingVoiceCache.set(singingVoiceKey, singingVoice);
-
-          voiceSynthesisResult = {
-            type: "success",
-            singingVoiceKey,
-            singingVoice,
-          };
-        } catch (error) {
-          phrase.errorOccurredDuringRendering = true;
-
-          voiceSynthesisResult = { type: "error", error };
-        }
-
-        this.dispatchEvent({
-          type: "voiceSynthesisFinished",
-          phraseKey,
-          result: voiceSynthesisResult,
-          context: { phrases, snapshot },
-        });
-      }
+      await taskGraphRunner.run();
 
       // 中断要求があった場合は interrupted、中断要求がなかった場合は complete を返す
       if (this.interruptionRequested) {
         return { type: "interrupted" };
       } else {
-        return { type: "complete", phrases };
+        this.dispatchEvent({
+          type: "renderingCompleted",
+          context,
+        });
+
+        return { type: "complete", phrases: context.phrases };
       }
     } finally {
       this.interruptionRequested = false;
       this._isRendering = false;
     }
+  }
+
+  private createAndSetupTaskGraphRunner(context: SongTrackRenderingContext) {
+    let cacheLoadPhase = false;
+    let cacheLoadedPhraseKeys = new Set<PhraseKey>();
+
+    let trackIdDuringQueryGeneration: TrackId | undefined = undefined;
+    let remainingQueryGenerationTaskCount = 0;
+    let queryGenerationResults = new Map<PhraseKey, QueryGenerationResult>();
+
+    const selector = async () => {
+      return undefined;
+    };
+
+    const taskGraph = this.buildTaskGraph(context);
+    const taskGraphRunner = new TaskGraphRunner(
+      context,
+      taskGraph,
+      selector,
+      true,
+    );
+
+    const onCacheLoadFinished = () => {
+      this.dispatchEvent({
+        type: "cacheLoadFinished",
+        cacheLoadedPhraseKeys,
+        context,
+      });
+
+      cacheLoadedPhraseKeys = new Set();
+    };
+
+    const onQueryGenerationTaskStarted = (
+      task: FrameAudioQueryGenerationTask,
+    ) => {
+      if (trackIdDuringQueryGeneration != undefined) {
+        return;
+      }
+      const targetPhraseKey = task.targetPhraseKey;
+      const targetTrackId = getOrThrow(
+        context.phrases,
+        targetPhraseKey,
+      ).trackId;
+
+      trackIdDuringQueryGeneration = targetTrackId;
+      remainingQueryGenerationTaskCount = 0;
+
+      for (const [task, taskStatus] of taskGraphRunner.taskStatuses) {
+        if (task.type !== "frameAudioQueryGeneration") {
+          continue;
+        }
+        if (
+          taskStatus.runStatus === "AwaitingDependencies" ||
+          taskStatus.runStatus === "Runnable" ||
+          taskStatus.runStatus === "Running"
+        ) {
+          const phrase = getOrThrow(context.phrases, task.targetPhraseKey);
+          if (phrase.trackId === targetTrackId) {
+            remainingQueryGenerationTaskCount++;
+          }
+        }
+      }
+      this.dispatchEvent({
+        type: "trackQueryGenerationStarted",
+        trackId: targetTrackId,
+        context,
+      });
+    };
+
+    const onPitchGenerationTaskStarted = (task: SingingPitchGenerationTask) => {
+      this.dispatchEvent({
+        type: "pitchGenerationStarted",
+        phraseKey: task.targetPhraseKey,
+        context,
+      });
+    };
+
+    const onVolumeGenerationTaskStarted = (
+      task: SingingVolumeGenerationTask,
+    ) => {
+      this.dispatchEvent({
+        type: "volumeGenerationStarted",
+        phraseKey: task.targetPhraseKey,
+        context,
+      });
+    };
+
+    const onVoiceSynthesisTaskStarted = (task: SingingVoiceSynthesisTask) => {
+      this.dispatchEvent({
+        type: "voiceSynthesisStarted",
+        phraseKey: task.targetPhraseKey,
+        context,
+      });
+    };
+
+    const onQueryGenerationTaskFinished = (
+      task: FrameAudioQueryGenerationTask,
+      taskResult: TaskResultInfo,
+    ) => {
+      if (trackIdDuringQueryGeneration == undefined) {
+        throw new UnreachableError("Track ID is undefined.");
+      }
+      const targetPhraseKey = task.targetPhraseKey;
+
+      switch (taskResult.type) {
+        case "Success": {
+          const phrase = getOrThrow(context.phrases, targetPhraseKey);
+          if (phrase.queryKey == undefined || phrase.query == undefined) {
+            throw new UnreachableError("Query or key is undefined.");
+          }
+          queryGenerationResults.set(targetPhraseKey, {
+            type: "success",
+            queryKey: phrase.queryKey,
+            query: phrase.query,
+          });
+          break;
+        }
+        case "Failed":
+          queryGenerationResults.set(targetPhraseKey, {
+            type: "error",
+            error: taskResult.error,
+          });
+          break;
+        default:
+          throw new ExhaustiveError(taskResult);
+      }
+
+      remainingQueryGenerationTaskCount--;
+
+      if (remainingQueryGenerationTaskCount === 0) {
+        this.dispatchEvent({
+          type: "trackQueryGenerationFinished",
+          trackId: trackIdDuringQueryGeneration,
+          results: queryGenerationResults,
+          context,
+        });
+
+        trackIdDuringQueryGeneration = undefined;
+        queryGenerationResults = new Map();
+      }
+    };
+
+    const onPitchGenerationTaskFinished = (
+      task: SingingPitchGenerationTask,
+      taskResult: TaskResultInfo,
+    ) => {
+      const targetPhraseKey = task.targetPhraseKey;
+
+      let result: PitchGenerationResult;
+      switch (taskResult.type) {
+        case "Success": {
+          const phrase = getOrThrow(context.phrases, targetPhraseKey);
+          if (
+            phrase.singingPitchKey == undefined ||
+            phrase.singingPitch == undefined
+          ) {
+            throw new UnreachableError("Singing pitch or key is undefined.");
+          }
+          result = {
+            type: "success",
+            singingPitchKey: phrase.singingPitchKey,
+            singingPitch: phrase.singingPitch,
+          };
+          break;
+        }
+        case "Failed":
+          result = {
+            type: "error",
+            error: taskResult.error,
+          };
+          break;
+        default:
+          throw new ExhaustiveError(taskResult);
+      }
+
+      this.dispatchEvent({
+        type: "pitchGenerationFinished",
+        phraseKey: task.targetPhraseKey,
+        result,
+        context,
+      });
+    };
+
+    const onVolumeGenerationTaskFinished = (
+      task: SingingVolumeGenerationTask,
+      taskResult: TaskResultInfo,
+    ) => {
+      const targetPhraseKey = task.targetPhraseKey;
+
+      let result: VolumeGenerationResult;
+      switch (taskResult.type) {
+        case "Success": {
+          const phrase = getOrThrow(context.phrases, targetPhraseKey);
+          if (
+            phrase.singingVolumeKey == undefined ||
+            phrase.singingVolume == undefined
+          ) {
+            throw new UnreachableError("Singing volume or key is undefined.");
+          }
+          result = {
+            type: "success",
+            singingVolumeKey: phrase.singingVolumeKey,
+            singingVolume: phrase.singingVolume,
+          };
+          break;
+        }
+        case "Failed":
+          result = {
+            type: "error",
+            error: taskResult.error,
+          };
+          break;
+        default:
+          throw new ExhaustiveError(taskResult);
+      }
+
+      this.dispatchEvent({
+        type: "volumeGenerationFinished",
+        phraseKey: task.targetPhraseKey,
+        result,
+        context,
+      });
+    };
+
+    const onVoiceSynthesisTaskFinished = (
+      task: SingingVoiceSynthesisTask,
+      taskResult: TaskResultInfo,
+    ) => {
+      const targetPhraseKey = task.targetPhraseKey;
+
+      let result: VoiceSynthesisResult;
+      switch (taskResult.type) {
+        case "Success": {
+          const phrase = getOrThrow(context.phrases, targetPhraseKey);
+          if (
+            phrase.singingVoiceKey == undefined ||
+            phrase.singingVoice == undefined
+          ) {
+            throw new UnreachableError("Singing voice or key is undefined.");
+          }
+          result = {
+            type: "success",
+            singingVoiceKey: phrase.singingVoiceKey,
+            singingVoice: phrase.singingVoice,
+          };
+          break;
+        }
+        case "Failed":
+          result = {
+            type: "error",
+            error: taskResult.error,
+          };
+          break;
+        default:
+          throw new ExhaustiveError(taskResult);
+      }
+
+      this.dispatchEvent({
+        type: "voiceSynthesisFinished",
+        phraseKey: task.targetPhraseKey,
+        result,
+        context,
+      });
+    };
+
+    taskGraphRunner.addEventListener((event) => {
+      if (cacheLoadPhase) {
+        if (
+          (event.type === "taskStarted" && !event.isCachedTask) ||
+          event.type === "completed"
+        ) {
+          onCacheLoadFinished();
+          cacheLoadPhase = false;
+        }
+      } else {
+        if (event.type === "taskStarted" && event.isCachedTask) {
+          if (!event.task.isCacheable) {
+            throw new UnreachableError();
+          }
+          cacheLoadPhase = true;
+          cacheLoadedPhraseKeys.add(event.task.targetPhraseKey);
+        }
+      }
+
+      switch (event.type) {
+        case "taskStarted":
+          if (!event.isCachedTask) {
+            switch (event.task.type) {
+              case "frameAudioQueryGeneration":
+                onQueryGenerationTaskStarted(event.task);
+                break;
+              case "singingPitchGeneration":
+                onPitchGenerationTaskStarted(event.task);
+                break;
+              case "singingVolumeGeneration":
+                onVolumeGenerationTaskStarted(event.task);
+                break;
+              case "singingVoiceSynthesis":
+                onVoiceSynthesisTaskStarted(event.task);
+                break;
+            }
+          }
+          break;
+        case "taskFinished":
+          switch (event.task.type) {
+            case "frameAudioQueryGeneration":
+              onQueryGenerationTaskFinished(event.task, event.result);
+              break;
+            case "singingPitchGeneration":
+              onPitchGenerationTaskFinished(event.task, event.result);
+              break;
+            case "singingVolumeGeneration":
+              onVolumeGenerationTaskFinished(event.task, event.result);
+              break;
+            case "singingVoiceSynthesis":
+              onVoiceSynthesisTaskFinished(event.task, event.result);
+              break;
+          }
+          break;
+        case "completed":
+          break;
+      }
+    });
+
+    return taskGraphRunner;
+  }
+
+  private buildTaskGraph(
+    context: SongTrackRenderingContext,
+  ): TaskGraph<SongTrackRenderingContext, SongTrackRenderingTask> {
+    const trackPhrasesMap = new Map<TrackId, Map<PhraseKey, PhraseForRender>>();
+    for (const trackId of context.snapshot.tracks.keys()) {
+      trackPhrasesMap.set(trackId, new Map());
+    }
+    for (const [phraseKey, phrase] of context.phrases) {
+      const trackPhrases = getOrThrow(trackPhrasesMap, phrase.trackId);
+      trackPhrases.set(phraseKey, phrase);
+    }
+
+    const tasks: SongTrackRenderingTask[] = [];
+
+    for (const [trackId, track] of context.snapshot.tracks) {
+      const trackPhraseKeys = [...getOrThrow(trackPhrasesMap, trackId).keys()];
+
+      const queryGenerationTaskMap = new Map<
+        PhraseKey,
+        FrameAudioQueryGenerationTask
+      >();
+      for (const phraseKey of trackPhraseKeys) {
+        if (track.singer == undefined) {
+          continue;
+        }
+        const queryGenerationTask = new FrameAudioQueryGenerationTask(
+          [],
+          phraseKey,
+          this.config,
+          this.engineSongApi,
+          this.queryCache,
+        );
+        queryGenerationTaskMap.set(phraseKey, queryGenerationTask);
+        tasks.push(queryGenerationTask);
+      }
+
+      const editingAndAdjustingPhonemeTimingTask =
+        new EditingAndAdjustingPhonemeTimingTask(
+          [...queryGenerationTaskMap.values()],
+          trackId,
+        );
+      tasks.push(editingAndAdjustingPhonemeTimingTask);
+
+      for (const [phraseKey, queryGenerationTask] of queryGenerationTaskMap) {
+        const pitchGenerationTask = new SingingPitchGenerationTask(
+          [queryGenerationTask, editingAndAdjustingPhonemeTimingTask],
+          phraseKey,
+          this.config,
+          this.engineSongApi,
+          this.singingPitchCache,
+        );
+        tasks.push(pitchGenerationTask);
+
+        const volumeGenerationTask = new SingingVolumeGenerationTask(
+          [pitchGenerationTask],
+          phraseKey,
+          this.config,
+          this.engineSongApi,
+          this.singingVolumeCache,
+        );
+        tasks.push(volumeGenerationTask);
+
+        const voiceSynthesisTask = new SingingVoiceSynthesisTask(
+          [volumeGenerationTask],
+          phraseKey,
+          this.engineSongApi,
+          this.singingVoiceCache,
+        );
+        tasks.push(voiceSynthesisTask);
+      }
+    }
+
+    return new TaskGraph(tasks);
   }
 
   /**
@@ -1372,195 +1768,6 @@ export class SongTrackRenderer {
       throw new Error("Listener does not exist.");
     }
     this.listeners.delete(listener);
-  }
-
-  /**
-   * クエリキャッシュからデータを読み込む。
-   *
-   * @param phrase 対象フレーズ。
-   * @param snapshot 現在のスナップショット。キャッシュキー計算に使用。
-   * @returns キャッシュヒットした場合はキーとクエリのオブジェクト、なければ undefined。
-   */
-  private async tryLoadQueryAndKeyFromCache(
-    phrase: PhraseForRender,
-    snapshot: SnapshotForRender,
-  ) {
-    const querySource = generateQuerySource(phrase, snapshot);
-    const key = await calculateQueryKey(querySource);
-    const query = this.queryCache.get(key);
-    return query != undefined ? { key, query } : undefined;
-  }
-
-  /**
-   * 歌唱ピッチキャッシュからデータを読み込む。
-   *
-   * @param phrase 対象フレーズ。
-   * @param snapshot 現在のスナップショット。キャッシュキー計算に使用。
-   * @returns キャッシュヒットした場合はキーとピッチのオブジェクト、なければ undefined。
-   */
-  private async tryLoadSingingPitchAndKeyFromCache(
-    phrase: PhraseForRender,
-    snapshot: SnapshotForRender,
-  ) {
-    const singingPitchSource = generateSingingPitchSource(phrase, snapshot);
-    const key = await calculateSingingPitchKey(singingPitchSource);
-    const singingPitch = this.singingPitchCache.get(key);
-    return singingPitch != undefined ? { key, singingPitch } : undefined;
-  }
-
-  /**
-   * 歌唱ボリュームキャッシュからデータを読み込む。
-   *
-   * @param phrase 対象フレーズ。
-   * @param snapshot 現在のスナップショット。キャッシュキー計算に使用。
-   * @returns キャッシュヒットした場合はキーとボリュームのオブジェクト、なければ undefined。
-   */
-  private async tryLoadSingingVolumeAndKeyFromCache(
-    phrase: PhraseForRender,
-    snapshot: SnapshotForRender,
-  ) {
-    const singingVolumeSource = generateSingingVolumeSource(phrase, snapshot);
-    const key = await calculateSingingVolumeKey(singingVolumeSource);
-    const singingVolume = this.singingVolumeCache.get(key);
-    return singingVolume != undefined ? { key, singingVolume } : undefined;
-  }
-
-  /**
-   * 歌声キャッシュからデータを読み込む。
-   *
-   * @param phrase 対象フレーズ。
-   * @param snapshot 現在のスナップショット。キャッシュキー計算に使用。
-   * @returns キャッシュヒットした場合はキーと歌声のオブジェクト、なければ undefined。
-   */
-  private async tryLoadSingingVoiceAndKeyFromCache(
-    phrase: PhraseForRender,
-    snapshot: SnapshotForRender,
-  ) {
-    const singingVoiceSource = generateSingingVoiceSource(phrase, snapshot);
-    const key = await calculateSingingVoiceKey(singingVoiceSource);
-    const singingVoice = this.singingVoiceCache.get(key);
-    return singingVoice != undefined ? { key, singingVoice } : undefined;
-  }
-
-  private applyPhonemeTimingEditAndAdjust(
-    track: Track,
-    trackPhrases: Map<PhraseKey, PhraseForRender>,
-    snapshot: SnapshotForRender,
-  ) {
-    // TODO: このメソッドのリファクタリングを行う
-
-    const trackPhraseEntries = [...trackPhrases.entries()];
-    const trackPhraseKeyArray = trackPhraseEntries.map((entry) => entry[0]);
-    const trackPhraseArray = trackPhraseEntries.map((entry) => entry[1]);
-    const trackPhraseStartTimes = trackPhraseArray.map(
-      (phrase) => phrase.startTime,
-    );
-    const loadedQueryArray = trackPhraseArray
-      .map((phrase) => phrase.query)
-      .filter((query) => query != undefined);
-
-    const clonedQueryArray = structuredClone(loadedQueryArray);
-
-    // TODO: この関数のインターフェースがいまいちなので、リファクタリングする
-    applyPhonemeTimingEditAndAdjust(
-      trackPhraseStartTimes,
-      clonedQueryArray,
-      track.phonemeTimingEditData,
-      snapshot.editorFrameRate,
-    );
-
-    const queryEntries = clonedQueryArray.map(
-      (value, index) => [trackPhraseKeyArray[index], value] as const,
-    );
-    const queryMap = new Map(queryEntries);
-
-    for (const [phraseKey, phrase] of trackPhraseEntries) {
-      phrase.phonemeTimingEditingAppliedQuery = getOrThrow(queryMap, phraseKey);
-    }
-  }
-
-  /**
-   * クエリを生成し、そのキーも計算して返す。
-   *
-   * @param phrase 対象フレーズ。
-   * @param snapshot 現在のスナップショット。
-   * @returns 生成されたクエリとそのキー。
-   */
-  private async generateQueryWithKey(
-    phrase: PhraseForRender,
-    snapshot: SnapshotForRender,
-  ) {
-    const querySource = generateQuerySource(phrase, snapshot);
-    const queryKey = await calculateQueryKey(querySource);
-    const query = await generateQuery(
-      querySource,
-      this.config,
-      this.engineSongApi,
-    );
-    return { queryKey, query };
-  }
-
-  /**
-   * 歌唱ピッチを生成し、そのキーも計算して返す。
-   *
-   * @param phrase 対象フレーズ。
-   * @param snapshot 現在のスナップショット。
-   * @returns 生成された歌唱ピッチとそのキー。
-   */
-  private async generateSingingPitchWithKey(
-    phrase: PhraseForRender,
-    snapshot: SnapshotForRender,
-  ) {
-    const singingPitchSource = generateSingingPitchSource(phrase, snapshot);
-    const singingPitchKey = await calculateSingingPitchKey(singingPitchSource);
-    const singingPitch = await generateSingingPitch(
-      singingPitchSource,
-      this.config,
-      this.engineSongApi,
-    );
-    return { singingPitchKey, singingPitch };
-  }
-
-  /**
-   * 歌唱ボリュームを生成し、そのキーも計算して返す。
-   *
-   * @param phrase 対象フレーズ。
-   * @param snapshot 現在のスナップショット。
-   * @returns 生成された歌唱ボリュームとそのキー。
-   */
-  private async generateSingingVolumeWithKey(
-    phrase: PhraseForRender,
-    snapshot: SnapshotForRender,
-  ) {
-    const singingVolumeSource = generateSingingVolumeSource(phrase, snapshot);
-    const singingVolumeKey =
-      await calculateSingingVolumeKey(singingVolumeSource);
-    const singingVolume = await generateSingingVolume(
-      singingVolumeSource,
-      this.config,
-      this.engineSongApi,
-    );
-    return { singingVolumeKey, singingVolume };
-  }
-
-  /**
-   * 歌声を合成し、そのキーも計算して返す。
-   *
-   * @param phrase 対象フレーズ。
-   * @param snapshot 現在のスナップショット。
-   * @returns 合成された歌声とそのキー。
-   */
-  private async synthesizeSingingVoiceWithKey(
-    phrase: PhraseForRender,
-    snapshot: SnapshotForRender,
-  ) {
-    const singingVoiceSource = generateSingingVoiceSource(phrase, snapshot);
-    const singingVoiceKey = await calculateSingingVoiceKey(singingVoiceSource);
-    const singingVoice = await synthesizeSingingVoice(
-      singingVoiceSource,
-      this.engineSongApi,
-    );
-    return { singingVoiceKey, singingVoice };
   }
 
   /**
