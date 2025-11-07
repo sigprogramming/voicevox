@@ -5,6 +5,7 @@ import {
   getNext,
   getPrev,
   isSorted,
+  linearInterpolation,
 } from "./utility";
 import { convertLongVowel, moraPattern } from "@/domain/japanese";
 import {
@@ -981,7 +982,10 @@ export function applyPitchEditWithSmoothing(
   const startFrame = Math.max(0, phraseQueryStartFrame);
   const endFrame = Math.min(pitchEditData.length, phraseQueryEndFrame);
 
-  const editedIndices: number[] = [];
+  const editedF0 = [...f0];
+  const editedFrames: number[] = [];
+  const editedF0Indices: number[] = [];
+  const isEdited: boolean[] = [];
 
   // ピッチ編集データをf0に適用する（有声区間にのみ適用する）
   for (let i = startFrame; i < endFrame; i++) {
@@ -989,51 +993,94 @@ export function applyPitchEditWithSmoothing(
     const phoneme = framePhonemes[f0Index];
     const isVoiced = !unvoicedPhonemes.includes(phoneme);
     if (isVoiced && pitchEditData[i] !== VALUE_INDICATING_NO_DATA) {
-      f0[f0Index] = pitchEditData[i];
-      editedIndices.push(f0Index);
-    }
-  }
-
-  const jumpIndicesInF0: number[] = [];
-
-  // 編集された区間の端を、f0が不連続になっている箇所として記録する
-  for (let i = 0; i < editedIndices.length; i++) {
-    const editedIndex = editedIndices[i];
-    const prevEditedIndex = getPrev(editedIndices, i);
-    const nextEditedIndex = getNext(editedIndices, i);
-
-    // 編集区間の開始位置を、f0が不連続になっている箇所として記録
-    if (prevEditedIndex == undefined) {
-      if (editedIndex !== 0) {
-        jumpIndicesInF0.push(editedIndex);
-      }
+      editedF0[f0Index] = pitchEditData[i];
+      editedFrames.push(i);
+      editedF0Indices.push(f0Index);
+      isEdited.push(true);
     } else {
-      if (editedIndex !== prevEditedIndex + 1) {
-        jumpIndicesInF0.push(editedIndex);
-      }
-    }
-
-    // 編集区間の終了位置を、f0が不連続になっている箇所として記録
-    if (nextEditedIndex == undefined) {
-      if (editedIndex !== f0.length - 1) {
-        jumpIndicesInF0.push(editedIndex + 1);
-      }
-    } else {
-      if (editedIndex !== nextEditedIndex - 1) {
-        jumpIndicesInF0.push(editedIndex + 1);
-      }
+      isEdited.push(false);
     }
   }
 
   // 対数スケールのf0に変換する
   const lf0 = f0.map((value) => Math.log(value));
+  const editedLf0 = editedF0.map((value) => Math.log(value));
+
+  let i = 0;
+  while (i < isEdited.length) {
+    if (isEdited[i]) {
+      i++;
+      continue;
+    }
+
+    const gapStart = i;
+    while (i < isEdited.length && !isEdited[i]) {
+      i++;
+    }
+    const gapLast = i - 1;
+
+    const leftAnchorIdx = gapStart - 1;
+    const rightAnchorIdx = gapLast + 1;
+
+    const leftAnchorExists = leftAnchorIdx >= 0 && leftAnchorIdx < isEdited.length && isEdited[leftAnchorIdx];
+    const rightAnchorExists = rightAnchorIdx >= 0 && rightAnchorIdx < isEdited.length && isEdited[rightAnchorIdx];
+
+    if (!leftAnchorExists && !rightAnchorExists) {
+      continue;
+    }
+
+    let offsetLeft = 0;
+    if (leftAnchorExists) {
+      offsetLeft = editedLf0[leftAnchorIdx] - lf0[leftAnchorIdx];
+    }
+
+    let offsetRight = 0;
+    if (rightAnchorExists) {
+      offsetRight = editedLf0[rightAnchorIdx] - lf0[rightAnchorIdx];
+    }
+
+    for (let j = gapStart; j <= gapLast; j++) {
+      editedLf0[j] += linearInterpolation(leftAnchorIdx, offsetLeft, rightAnchorIdx, offsetRight, j);
+    }
+  }
+
+  const jumpF0Indices: number[] = [];
+
+  // 編集された区間の端を、f0が不連続になっている箇所として記録する
+  for (let i = 0; i < editedF0Indices.length; i++) {
+    const editedF0Index = editedF0Indices[i];
+    const prevEditedF0Index = getPrev(editedF0Indices, i);
+    const nextEditedF0Index = getNext(editedF0Indices, i);
+
+    // 編集区間の開始位置を、f0が不連続になっている箇所として記録
+    if (prevEditedF0Index == undefined) {
+      if (editedF0Index !== 0) {
+        jumpF0Indices.push(editedF0Index);
+      }
+    } else {
+      if (editedF0Index !== prevEditedF0Index + 1) {
+        jumpF0Indices.push(editedF0Index);
+      }
+    }
+
+    // 編集区間の終了位置を、f0が不連続になっている箇所として記録
+    if (nextEditedF0Index == undefined) {
+      if (editedF0Index !== f0.length - 1) {
+        jumpF0Indices.push(editedF0Index + 1);
+      }
+    } else {
+      if (editedF0Index !== nextEditedF0Index - 1) {
+        jumpF0Indices.push(editedF0Index + 1);
+      }
+    }
+  }
 
   // f0が不連続になっている各箇所を滑らかにつなぐ
   // NOTE: 最大6フレームかけて滑らかにする
-  applySmoothTransition(lf0, jumpIndicesInF0, 6);
+  applySmoothTransition(editedLf0, jumpF0Indices, 6);
 
   // 元のスケールに戻して、f0を更新する
-  phraseQuery.f0 = lf0.map((value) => Math.exp(value));
+  phraseQuery.f0 = editedLf0.map((value) => Math.exp(value));
 }
 
 export function applyVolumeEdit(
