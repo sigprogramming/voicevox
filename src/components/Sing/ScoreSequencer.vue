@@ -167,6 +167,11 @@
               transform: `translateX(${phraseInfo.x - scrollX}px)`,
             }"
           />
+          <SequencerDebugInfo
+            v-if="showPhraseBoundaries"
+            :showPhraseBoundaries
+            :offsetX="scrollX"
+          />
           <div
             class="sequencer-playhead"
             data-testid="sequencer-playhead"
@@ -216,7 +221,7 @@
       </div>
     </template>
     <template #after>
-      <SequencerParameterPanel v-if="isParameterPanelOpen" />
+      <SequencerParameterPanel v-if="isParameterPanelOpen" :viewportInfo />
     </template>
   </QSplitter>
 </template>
@@ -281,6 +286,7 @@ import SequencerPhraseIndicator from "@/components/Sing/SequencerPhraseIndicator
 import CharacterPortrait from "@/components/Sing/CharacterPortrait.vue";
 import SequencerPitch from "@/components/Sing/SequencerPitch.vue";
 import SequencerLyricInput from "@/components/Sing/SequencerLyricInput.vue";
+import SequencerDebugInfo from "@/components/Sing/SequencerDebugInfo.vue";
 import SequencerToolPalette from "@/components/Sing/SequencerToolPalette.vue";
 import { isOnCommandOrCtrlKeyDown } from "@/store/utility";
 import { createLogger } from "@/helpers/log";
@@ -446,6 +452,9 @@ const phraseInfosInOtherTracks = computed(() => {
 const parameterPanelHeight = ref(300);
 const isParameterPanelOpen = computed(
   () => store.state.experimentalSetting.showParameterPanel,
+);
+const showPhraseBoundaries = computed(
+  () => store.state.experimentalSetting.showPhraseBoundaries,
 );
 
 const setParameterPanelHeight = (height: number) => {
@@ -1246,6 +1255,11 @@ const contextMenuData = computed<ContextMenuItemData[]>(() => {
   &::-webkit-scrollbar-track:active {
     cursor: default;
   }
+}
+
+.sequencer-phoneme-timings {
+  grid-row: 2;
+  grid-column: 2;
 }
 
 .sequencer-pitch {
