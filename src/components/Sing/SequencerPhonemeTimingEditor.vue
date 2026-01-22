@@ -19,15 +19,26 @@
         class="phoneme-timings"
         :offsetX="props.viewportInfo.offsetX"
         :offsetY="props.viewportInfo.offsetY"
+        :previewPhonemeTimingEdit="phonemeTimingPreviewEdit"
+      />
+      <div
+        ref="interactionLayer"
+        class="interaction-layer"
+        @pointerdown="onPointerDown"
       />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
-import type { ViewportInfo } from "@/sing/viewHelper";
+import { computed, ref } from "vue";
+import type { ViewportInfo, CursorState } from "@/sing/viewHelper";
 import { useStore } from "@/store";
+import { usePhonemeTimingEditorStateMachine } from "@/composables/usePhonemeTimingEditorStateMachine";
+import {
+  onMountedOrActivated,
+  onUnmountedOrDeactivated,
+} from "@/composables/onMountOrActivate";
 import SequencerParameterGrid from "@/components/Sing/SequencerParameterGrid.vue";
 import SequencerWaveform from "@/components/Sing/SequencerWaveform.vue";
 import SequencerPhonemeTimings from "@/components/Sing/SequencerPhonemeTimings.vue";
@@ -38,6 +49,80 @@ const editTarget = computed(() => store.state.parameterPanelEditTarget);
 const props = defineProps<{
   viewportInfo: ViewportInfo;
 }>();
+
+const { stateMachineProcess, cursorState, phonemeTimingPreviewEdit } =
+  usePhonemeTimingEditorStateMachine(
+    store,
+    computed(() => props.viewportInfo),
+  );
+
+const interactionLayer = ref<HTMLElement | null>(null);
+
+// カーソルスタイル
+const cursorStyle = computed(() => {
+  const state: CursorState = cursorState.value;
+  switch (state) {
+    case "EW_RESIZE":
+      return "ew-resize";
+    case "DRAW":
+      return "crosshair";
+    case "ERASE":
+      return "crosshair";
+    default:
+      return "default";
+  }
+});
+
+// インタラクションレイヤー内のローカル座標を取得
+const getLocalPositionX = (event: PointerEvent): number => {
+  const layer = interactionLayer.value;
+  if (layer == null) {
+    return 0;
+  }
+  const rect = layer.getBoundingClientRect();
+  return event.clientX - rect.left;
+};
+
+const onPointerDown = (event: PointerEvent) => {
+  if (event.button !== 0) {
+    return;
+  }
+  stateMachineProcess({
+    type: "pointerEvent",
+    targetArea: "PhonemeTimingArea",
+    pointerEvent: event,
+    positionX: getLocalPositionX(event),
+  });
+};
+
+const onWindowPointerMove = (event: PointerEvent) => {
+  stateMachineProcess({
+    type: "pointerEvent",
+    targetArea: "Window",
+    pointerEvent: event,
+    positionX: getLocalPositionX(event),
+  });
+};
+
+const onWindowPointerUp = (event: PointerEvent) => {
+  stateMachineProcess({
+    type: "pointerEvent",
+    targetArea: "Window",
+    pointerEvent: event,
+    positionX: getLocalPositionX(event),
+  });
+};
+
+// イベントリスナー登録（常に登録・解除）
+onMountedOrActivated(() => {
+  window.addEventListener("pointermove", onWindowPointerMove);
+  window.addEventListener("pointerup", onWindowPointerUp);
+});
+
+onUnmountedOrDeactivated(() => {
+  window.removeEventListener("pointermove", onWindowPointerMove);
+  window.removeEventListener("pointerup", onWindowPointerUp);
+});
 </script>
 
 <style scoped lang="scss">
@@ -83,5 +168,12 @@ const props = defineProps<{
 .phoneme-timings {
   grid-column: 1;
   grid-row: 1 / 5;
+}
+
+.interaction-layer {
+  grid-column: 1;
+  grid-row: 1 / 5;
+  z-index: 10;
+  cursor: v-bind(cursorStyle);
 }
 </style>
