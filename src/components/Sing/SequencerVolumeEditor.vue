@@ -215,8 +215,6 @@ const contextMenuData = computed<ContextMenuItemData[]>(() => [
   },
 ]);
 
-const isPointerInParameterArea = ref(false);
-
 const cursorClass = computed(() => {
   switch (cursorState.value) {
     case "DRAW":
@@ -255,9 +253,14 @@ let requestId: number | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let renderInNextFrame = false;
 let isUnmounted = false;
-let viewportRectCache:
-  | { left: number; top: number; width: number; height: number }
-  | undefined;
+type ViewportRect = {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+};
+
+let viewportRectCache: ViewportRect | undefined;
 // NOTE: オリジナルと編集後のセグメントデータ。
 // リアクティビティは不要なため（renderInNextFrame経由で描画される）、refではなくplain変数で管理する。
 let volumeOriginalSegmentsData: VolumeSegment[] = [];
@@ -818,9 +821,14 @@ const refreshEffectiveVolumeSegments = () => {
 
 const dispatchVolumeEditorEvent = (
   pointerEvent: PointerEvent,
-  targetArea: "Editor" | "Window",
+  eventSource: "Editor" | "Window",
 ) => {
-  const pointerInfo = computeViewportPointerInfo(pointerEvent);
+  const rect = getViewportRect();
+  const targetArea =
+    eventSource === "Window"
+      ? "Window"
+      : getEditorPointerArea(pointerEvent, rect);
+  const pointerInfo = computeViewportPointerInfo(pointerEvent, rect);
   stateMachineProcess({
     type: "pointerEvent",
     targetArea,
@@ -837,6 +845,20 @@ const getViewportRect = () => {
     throw new Error("volume editor viewport size is invalid.");
   }
   return rect;
+};
+
+const getEditorPointerArea = (
+  pointerEvent: PointerEvent,
+  rect: ViewportRect,
+): "ParameterArea" | "GridLabelsArea" => {
+  const localX = pointerEvent.clientX - rect.left;
+  const localY = pointerEvent.clientY - rect.top;
+  const isInParameterArea =
+    localX >= VOLUME_EDITOR_LAYOUT.keyColumnWidthPx &&
+    localX <= rect.width &&
+    localY >= 0 &&
+    localY <= rect.height;
+  return isInParameterArea ? "ParameterArea" : "GridLabelsArea";
 };
 
 // TODO: 後続PRで、ResizeObserverからrectキャッシュを更新する形に変更する。
@@ -857,22 +879,10 @@ const updateViewportRectCache = () => {
   };
 };
 
-const isPointerEventInParameterArea = (pointerEvent: PointerEvent) => {
-  const rect = getViewportRect();
-  const localX = pointerEvent.clientX - rect.left;
-  const localY = pointerEvent.clientY - rect.top;
-  return (
-    localX >= VOLUME_EDITOR_LAYOUT.keyColumnWidthPx &&
-    localX <= rect.width &&
-    localY >= 0 &&
-    localY <= rect.height
-  );
-};
-
 const computeViewportPointerInfo = (
   pointerEvent: PointerEvent,
+  rect: ViewportRect,
 ): VolumePointerInfo => {
-  const rect = getViewportRect();
   const localX = pointerEvent.clientX - rect.left;
   const localY = pointerEvent.clientY - rect.top;
   const width = rect.width;
@@ -903,7 +913,6 @@ const computeViewportPointerInfo = (
     db,
     originalValue,
     isEditable: isFrameInVolumeEditableRange(frame, editableFrameRanges.value),
-    isInParameterArea: isPointerInParameterArea.value,
     x: clampedX,
     y: clampedY,
   };
@@ -914,7 +923,6 @@ const onSurfacePointerDown = (event: PointerEvent) => {
     return;
   }
   updateViewportRectCache();
-  isPointerInParameterArea.value = isPointerEventInParameterArea(event);
   if (store.state.parameterPanelEditTarget !== "VOLUME") {
     void store.actions.SET_PARAMETER_PANEL_EDIT_TARGET({
       editTarget: "VOLUME",
@@ -925,13 +933,11 @@ const onSurfacePointerDown = (event: PointerEvent) => {
 
 const onSurfacePointerMove = (event: PointerEvent) => {
   if (previewMode.value === "IDLE") {
-    isPointerInParameterArea.value = isPointerEventInParameterArea(event);
     dispatchVolumeEditorEvent(event, "Editor");
   }
 };
 
 const onSurfacePointerLeave = (event: PointerEvent) => {
-  isPointerInParameterArea.value = false;
   if (previewMode.value === "IDLE") {
     dispatchVolumeEditorEvent(event, "Editor");
   }

@@ -131,8 +131,8 @@ export class DrawVolumeState implements State<
       }
     }
 
-    // 対象がEditor
-    if (targetArea === "Editor") {
+    // 対象がパラメータエリアまたはグリッドラベルエリア
+    if (targetArea === "ParameterArea" || targetArea === "GridLabelsArea") {
       if (pointerEvent.type === "pointermove") {
         this.currentCursorPos = position;
         this.innerContext.executePreviewProcess = true;

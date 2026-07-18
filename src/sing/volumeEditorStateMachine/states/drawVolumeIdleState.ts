@@ -31,7 +31,10 @@ export class DrawVolumeIdleState implements State<
     if (input.type !== "pointerEvent") {
       return;
     }
-    if (input.targetArea !== "Editor") {
+    if (
+      input.targetArea !== "ParameterArea" &&
+      input.targetArea !== "GridLabelsArea"
+    ) {
       return;
     }
 
@@ -39,7 +42,7 @@ export class DrawVolumeIdleState implements State<
 
     if (
       pointerEvent.type === "pointerleave" ||
-      !pointerInfo.isInParameterArea
+      input.targetArea === "GridLabelsArea"
     ) {
       context.cursorState.value = "UNSET";
       return;

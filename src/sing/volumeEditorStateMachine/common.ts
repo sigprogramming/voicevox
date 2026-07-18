@@ -14,7 +14,6 @@ export type PositionOnVolumeEditor = {
 export type VolumeEditorPointerInfo = {
   readonly position: PositionOnVolumeEditor;
   readonly db: number;
-  readonly isInParameterArea: boolean;
   readonly x: number;
   readonly y: number;
 };
@@ -28,7 +27,13 @@ export type VolumeEditorTooltipData = {
 export type VolumeEditorInput =
   | {
       readonly type: "pointerEvent";
-      readonly targetArea: "Editor";
+      readonly targetArea: "ParameterArea";
+      readonly pointerEvent: PointerEvent;
+      readonly pointerInfo: VolumeEditorPointerInfo;
+    }
+  | {
+      readonly type: "pointerEvent";
+      readonly targetArea: "GridLabelsArea";
       readonly pointerEvent: PointerEvent;
       readonly pointerInfo: VolumeEditorPointerInfo;
     }
