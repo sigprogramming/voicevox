@@ -458,16 +458,20 @@ export function statelessRandomInt32(seed: number, index: number) {
 }
 
 /**
- * 各音素にシード設定を割り当てる。
+ * 各音素にシード値を割り当てる。
  *
- * 1つのノートに属する音素どうしでは、シード値が必ず異なる。
- * フレーズ先頭のpauにはフレーズ先頭のノートから求めたシード値を、
- * フレーズ末尾のpauにはフレーズ末尾のノートから求めたシード値を割り当てる。
- * pauのシード値は、求めるのに使ったノートに属する音素のシード値とは必ず異なり、
- * そのノートに属する音素の数が歌詞の変更で増減しても変わらない。
+ * 各音素のシード値は、その音素が属するノートのシード値のソースから求める。
+ * フレーズ前後のpauは、それぞれフレーズ先頭のノート、フレーズ末尾のノートに
+ * 属するものとして扱う。
  *
- * @param phonemes シード設定を割り当てる音素列。この配列を破壊的に変更する
- * @param notes フレーズのノート列
+ * 学習時のシード値はランダムで、同じシード値が続く入力は学習データに無い形になって
+ * 推論の品質を下げる可能性があるため、同じノートに属する音素どうしには
+ * 必ず異なるシード値を割り当てる。
+ *
+ * pauに割り当てられるシード値は、pauが属するノートの音素の数が増減しても変わらない。
+ *
+ * @param phonemes シード値を割り当てる音素列。
+ * @param notes フレーズのノート列。
  */
 export function assignSeedingToPhonemes(
   phonemes: FramePhoneme[],
@@ -481,11 +485,11 @@ export function assignSeedingToPhonemes(
   );
   const phonemeIndicesInNote = computePhonemeIndicesInNote(phonemes);
 
-  // 各音素のシード値は、seedSourceを基に生成される乱数列の、seedIndex番目の値にする
-  // ノートの音素では、その音素が属するノートの乱数列を使い、ノートの中での音素のインデックスをseedIndexにする
-  // フレーズ先頭のpauでは、フレーズ先頭のノートの乱数列の-2番目の値を、
-  // フレーズ末尾のpauでは、フレーズ末尾のノートの乱数列の-1番目の値を使う
   for (const [i, phoneme] of phonemes.entries()) {
+    // seedSourceを基に生成される乱数列のseedIndex番目の値を、シード値として設定する
+    // pau以外の音素では、その音素が属するノートの乱数列の値を、0番目から順番に使う
+    // フレーズ先頭のpauでは、フレーズ先頭のノートの乱数列の-2番目の値を、
+    // フレーズ末尾のpauでは、フレーズ末尾のノートの乱数列の-1番目の値を使う
     let seedSource: number;
     let seedIndex: number;
     if (phoneme.noteId != undefined) {

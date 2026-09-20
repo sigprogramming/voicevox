@@ -338,7 +338,7 @@ export function wrapToInt32(value: number) {
 }
 
 /**
- * MurmurHash3の32bit finalizer（fmix32）をJavaScriptに移植したもの。
+ * MurmurHash3の32bit finalizer（fmix32）をTypeScriptに移植したもの。
  * 符号付き32bit整数を受け取り、異なる入力には必ず異なる値を返す。
  * 移植元は https://github.com/aappleby/smhasher の src/MurmurHash3.cpp。
  */
